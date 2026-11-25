@@ -911,9 +911,10 @@ static void on_timer(nw_timer *timer, void *privdata)
     nw_http_svr *svr = privdata;
     double t = now();
 
-    nw_ses *curr = svr->raw_svr->clt_list_head;
-    while (curr) {
-        nw_ses *next = curr->next;
+    nw_svr_iterator iter;
+    nw_ses *curr;
+    nw_svr_iter_init(&iter, svr->raw_svr);
+    while ((curr = nw_svr_next(&iter)) != NULL) {
         nw_http_conn *conn = curr->privdata;
         if (conn->closing) {
             if (t >= conn->close_time) {
@@ -929,7 +930,6 @@ static void on_timer(nw_timer *timer, void *privdata)
             if (t - conn->active_time > svr->keep_alive_timeout)
                 nw_svr_close_clt(svr->raw_svr, curr);
         }
-        curr = next;
     }
 }
 
