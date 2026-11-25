@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: c1000k test: client opening one million connections
  *     History: yang@haipo.me, 2016/03/21, create
  */
 
@@ -13,7 +13,7 @@
 # include <sys/socket.h>
 # include <netinet/in.h>
 # include <arpa/inet.h>
-# include <netdb.h> 
+# include <netdb.h>
 # include <sys/file.h>
 # include <sys/resource.h>
 
@@ -79,4 +79,3 @@ error:
     printf("connections: %d, error: %s\n", connections, strerror(errno));
     return 0;
 }
-

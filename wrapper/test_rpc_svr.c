@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: example: rpc server
  *     History: yang@haipo.me, 2016/03/30, create
  */
 
@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
     int bind_count = argc - 1;
     nw_svr_bind *bind_arr = malloc(sizeof(nw_svr_bind) * bind_count);
     assert(bind_arr != NULL);
-    memset(bind_arr, sizeof(nw_svr_bind) * bind_count, 0);
+    memset(bind_arr, 0, sizeof(nw_svr_bind) * bind_count);
     for (int i = 0; i < bind_count; ++i) {
         int ret = nw_sock_cfg_parse(argv[i + 1], &bind_arr[i].addr, &bind_arr[i].sock_type);
         if (ret < 0) {
@@ -66,4 +66,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

@@ -1,8 +1,10 @@
 /*
- * Description: 
+ * Description: ut_rpc client, a nw_clt speaking rpc_pkg with failover
  *     History: yang@haipo.me, 2016/03/30, create
  */
 
+# include <stdlib.h>
+# include <string.h>
 # include <assert.h>
 
 # include "ut_rpc_clt.h"
@@ -18,7 +20,7 @@ static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
 
     rpc_clt *clt= ses->privdata;
     if (pkg.command == RPC_CMD_HEARTBEAT) {
-        clt->last_heartbeat = current_timestamp();
+        clt->last_heartbeat = rpc_monotonic_time();
         return;
     }
     clt->on_recv_pkg(ses, &pkg);
@@ -33,7 +35,7 @@ static void on_connect(nw_ses *ses, bool result)
     rpc_clt *clt= ses->privdata;
     if (result) {
         clt->curr_index = 0;
-        clt->last_heartbeat = current_timestamp();
+        clt->last_heartbeat = rpc_monotonic_time();
     }
     if (clt->on_connect) {
         clt->on_connect(ses, result);
@@ -61,7 +63,7 @@ static void on_timer(nw_timer *timer, void *privdata)
     if (clt->raw_clt->ses.sock_type == SOCK_DGRAM)
         return;
 
-    double now = current_timestamp();
+    double now = rpc_monotonic_time();
     if (now - clt->last_heartbeat > RPC_HEARTBEAT_TIMEOUT) {
         nw_clt_close(clt->raw_clt);
         nw_clt_start(clt->raw_clt);
@@ -102,6 +104,9 @@ rpc_clt *rpc_clt_create(rpc_clt_cfg *cfg, rpc_clt_type *type)
 
     rpc_clt *clt = malloc(sizeof(rpc_clt));
     assert(clt != NULL);
+    /* curr_index must start at 0: on_close reads it before the first
+     * successful connect ever sets it */
+    memset(clt, 0, sizeof(rpc_clt));
 
     clt->raw_clt = nw_clt_create(&raw_cfg, &raw_type, clt);
     if (clt->raw_clt == NULL) {
@@ -150,8 +155,10 @@ int rpc_clt_send(rpc_clt *clt, rpc_pkg *pkg)
 
 void rpc_clt_release(rpc_clt *clt)
 {
-    nw_clt_release(clt->raw_clt);
     nw_timer_stop(&clt->timer);
+    nw_clt_release(clt->raw_clt);
+    free(clt->addr_arr);
+    free(clt->name);
     free(clt);
 }
 
@@ -159,4 +166,3 @@ bool rpc_clt_connected(rpc_clt *clt)
 {
     return nw_clt_connected(clt->raw_clt);
 }
-

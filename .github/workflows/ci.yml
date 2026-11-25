@@ -1,0 +1,14 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libev-dev valgrind cppcheck
+      - run: make -j4
+      - run: make check
+      - run: make check-asan
+      - run: make check-tsan
+      - run: make check-valgrind
+      - run: make VARIANT=release -j4 && make VARIANT=release check

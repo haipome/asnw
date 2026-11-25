@@ -1,9 +1,8 @@
 /*
- * Description: network buf manager
+ * Description: buffers: fixed size buf, buf pool, buf list and object cache
  *     History: yang@haipo.me, 2016/03/16, create
  */
 
-# include <errno.h>
 # include <string.h>
 # include "nw_buf.h"
 
@@ -251,4 +250,3 @@ void nw_cache_release(nw_cache *cache)
     free(cache->free_arr);
     free(cache);
 }
-

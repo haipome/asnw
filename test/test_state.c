@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: example: nw_state add, modify, iterate and timeout
  *     History: yang@haipo.me, 2016/03/23, create
  */
 
@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
         error(1, errno, "nw_state_create fail");
     }
 
-    nw_state_entry *entry = nw_state_add(state, 1.0);
+    nw_state_entry *entry = nw_state_add(state, 1.0, 0);
     if (entry == NULL) {
         error(1, errno, "nw_state_add fail");
     }
@@ -56,7 +56,7 @@ int main(int argc, char *argv[])
     nw_state_del(state, 1);
 
     for (int i = 0; i < 100; ++i) {
-        entry = nw_state_add(state, 1.0);
+        entry = nw_state_add(state, 1.0, 0);
         if (entry == NULL) {
             error(1, errno, "nw_state_add fail");
         }
@@ -82,4 +82,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

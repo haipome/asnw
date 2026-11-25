@@ -1,12 +1,14 @@
 /*
- * Description: 
+ * Description: client, keeps a connection to one address
  *     History: yang@haipo.me, 2016/03/22, create
  */
 
 # include <stdio.h>
 # include <stdlib.h>
+# include <string.h>
+# include <errno.h>
+# include <time.h>
 # include <unistd.h>
-# include <sys/time.h>
 
 # include "nw_clt.h"
 
@@ -30,46 +32,42 @@ static int create_socket(int family, int sock_type)
     return sockfd;
 }
 
-static int set_socket_option(nw_clt *clt, int sockfd)
+/* best effort: a refused buffer size is not a reason to drop the connection */
+static void set_socket_option(nw_clt *clt, int sockfd)
 {
     if (clt->read_mem > 0) {
-        if (nw_sock_set_recv_buf(sockfd, clt->read_mem) < 0) {
-            close(sockfd);
-            return -1;
-        }
+        nw_sock_set_recv_buf(sockfd, clt->read_mem);
     }
     if (clt->write_mem > 0) {
-        if (nw_sock_set_send_buf(sockfd, clt->write_mem) < 0) {
-            close(sockfd);
-            return -1;
-        }
+        nw_sock_set_send_buf(sockfd, clt->write_mem);
     }
-
-    return 0;
 }
 
-static void generate_random_path(char *path, size_t size, char *prefix, char *suffix)
+/* local address of a unix dgram client, unique per process and per start.
+ * does not touch the application's rand() state */
+static void generate_local_path(char *path, size_t size)
 {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    srand(tv.tv_sec * tv.tv_usec);
-    char randname[11];
-    for (int i = 0; i < 10; ++i) {
-        randname[i] = 'a' + rand() % 26;
-    }
-    randname[10] = '\0';
-    snprintf(path, size, "%s/%s%s%s", P_tmpdir, prefix, randname, suffix);
+    static unsigned int counter;
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    snprintf(path, size, "%s/asnw_dgram_%d_%u_%09ld.sock", P_tmpdir, (int)getpid(), counter++, (long)ts.tv_nsec);
 }
+
+static void reconnect_later(nw_clt *clt, double delay);
 
 static void on_reconnect_timeout(nw_timer *timer, void *privdata)
 {
     nw_clt *clt = (nw_clt *)privdata;
-    nw_clt_start(clt);
+    if (nw_clt_start(clt) < 0) {
+        /* could not even create a socket (out of fds ...), keep trying */
+        reconnect_later(clt, clt->reconnect_timeout);
+    }
 }
 
-static void reconnect_later(nw_clt *clt)
+static void reconnect_later(nw_clt *clt, double delay)
 {
-    nw_timer_set(&clt->timer, clt->reconnect_timeout, false, on_reconnect_timeout, clt);
+    nw_timer_stop(&clt->timer);
+    nw_timer_set(&clt->timer, delay, false, on_reconnect_timeout, clt);
     nw_timer_start(&clt->timer);
 }
 
@@ -84,6 +82,7 @@ static void on_connect_timeout(nw_timer *timer, void *privdata)
 
 static void watch_connect(nw_clt *clt)
 {
+    nw_timer_stop(&clt->timer);
     nw_timer_set(&clt->timer, clt->reconnect_timeout, false, on_connect_timeout, clt);
     nw_timer_start(&clt->timer);
 }
@@ -95,11 +94,32 @@ static void on_recv_fd(nw_ses *ses, int fd)
 
 static int clt_close(nw_clt *clt)
 {
-    if (nw_timer_active(&clt->timer)) {
-        nw_timer_stop(&clt->timer);
-    }
+    nw_timer_stop(&clt->timer);
     clt->connected = false;
-    return nw_ses_close(&clt->ses);
+    int ret = nw_ses_close(&clt->ses);
+    /* remove the socket file a unix dgram client bound for itself */
+    if (clt->local_path_bound) {
+        unlink(clt->ses.host_addr->un.sun_path);
+        clt->local_path_bound = false;
+    }
+    return ret;
+}
+
+/*
+ * The one place a lost connection or a failed connect is handled: tell the
+ * user, close, and schedule the next attempt. on_close returning > 0 asks
+ * for an immediate retry; that retry still goes through the event loop
+ * (a zero delay timer) so a connect that keeps failing synchronously can
+ * never recurse.
+ */
+static void close_and_reconnect(nw_clt *clt)
+{
+    int ret = 0;
+    if (clt->type.on_close) {
+        ret = clt->type.on_close(&clt->ses);
+    }
+    clt_close(clt);
+    reconnect_later(clt, ret > 0 ? 0 : clt->reconnect_timeout);
 }
 
 static void on_connect(nw_ses *ses, bool result)
@@ -107,6 +127,8 @@ static void on_connect(nw_ses *ses, bool result)
     nw_clt *clt = (nw_clt *)ses;
     clt->on_connect_called = true;
     if (result) {
+        /* the connect timeout is not needed any more */
+        nw_timer_stop(&clt->timer);
         clt->connected = true;
         set_socket_option(clt, clt->ses.sockfd);
         nw_sock_host_addr(ses->sockfd, ses->host_addr);
@@ -117,16 +139,7 @@ static void on_connect(nw_ses *ses, bool result)
         if (clt->type.on_connect) {
             clt->type.on_connect(ses, result);
         }
-        int ret = 0;
-        if (clt->type.on_close) {
-            ret = clt->type.on_close(&clt->ses);
-        }
-        clt_close(clt);
-        if (ret > 0) {
-            nw_clt_start(clt);
-        } else {
-            reconnect_later(clt);
-        }
+        close_and_reconnect(clt);
     }
 }
 
@@ -138,31 +151,13 @@ static void on_error(nw_ses *ses, const char *msg)
     }
     if (ses->sock_type == SOCK_DGRAM)
         return;
-    int ret = 0;
-    if (clt->type.on_close) {
-        ret = clt->type.on_close(&clt->ses);
-    }
-    clt_close(clt);
-    if (ret > 0) {
-        nw_clt_start(clt);
-    } else {
-        reconnect_later(clt);
-    }
+    close_and_reconnect(clt);
 }
 
 static void on_close(nw_ses *ses)
 {
     nw_clt *clt = (nw_clt *)ses;
-    int ret = 0;
-    if (clt->type.on_close) {
-        ret = clt->type.on_close(&clt->ses);
-    }
-    clt_close(clt);
-    if (ret > 0) {
-        nw_clt_start(clt);
-    } else {
-        reconnect_later(clt);
-    }
+    close_and_reconnect(clt);
 }
 
 nw_clt *nw_clt_create(nw_clt_cfg *cfg, nw_clt_type *type, void *privdata)
@@ -177,7 +172,10 @@ nw_clt *nw_clt_create(nw_clt_cfg *cfg, nw_clt_type *type, void *privdata)
         return NULL;
 
     nw_clt *clt = malloc(sizeof(nw_clt));
+    if (clt == NULL)
+        return NULL;
     memset(clt, 0, sizeof(nw_clt));
+    clt->ses.sockfd = -1;
     clt->type = *type;
     clt->reconnect_timeout = cfg->reconnect_timeout  == 0 ? 1.0 : cfg->reconnect_timeout;
     if (cfg->buf_pool) {
@@ -194,6 +192,10 @@ nw_clt *nw_clt_create(nw_clt_cfg *cfg, nw_clt_type *type, void *privdata)
     clt->read_mem = cfg->read_mem;
     clt->write_mem = cfg->write_mem;
 
+    if (nw_ses_init(&clt->ses, nw_default_loop, clt->buf_pool, cfg->buf_limit, NW_SES_TYPE_CLIENT) < 0) {
+        nw_clt_release(clt);
+        return NULL;
+    }
     nw_addr_t *host_addr = malloc(sizeof(nw_addr_t));
     if (host_addr == NULL) {
         nw_clt_release(clt);
@@ -202,11 +204,6 @@ nw_clt *nw_clt_create(nw_clt_cfg *cfg, nw_clt_type *type, void *privdata)
     memset(host_addr, 0, sizeof(nw_addr_t));
     host_addr->family = cfg->addr.family;
     host_addr->addrlen = cfg->addr.addrlen;
-
-    if (nw_ses_init(&clt->ses, nw_default_loop, clt->buf_pool, cfg->buf_limit, NW_SES_TYPE_CLIENT) < 0) {
-        nw_clt_release(clt);
-        return NULL;
-    }
     memcpy(&clt->ses.peer_addr, &cfg->addr, sizeof(nw_addr_t));
     clt->ses.host_addr   = host_addr;
     clt->ses.sockfd      = -1;
@@ -225,33 +222,39 @@ nw_clt *nw_clt_create(nw_clt_cfg *cfg, nw_clt_type *type, void *privdata)
 
 int nw_clt_start(nw_clt *clt)
 {
+    /* starting an already started client restarts it, the old socket and
+     * any pending reconnect are dropped */
+    clt_close(clt);
+
     int sockfd = create_socket(clt->ses.peer_addr.family, clt->ses.sock_type);
     if (sockfd < 0) {
         return -1;
     }
     clt->ses.sockfd = sockfd;
     if (clt->ses.peer_addr.family == AF_UNIX && clt->ses.sock_type == SOCK_DGRAM) {
-        clt->ses.host_addr->un.sun_family = AF_UNIX;
-        generate_random_path(clt->ses.host_addr->un.sun_path, sizeof(clt->ses.host_addr->un.sun_path), "dgram", ".sock");
-        if (nw_ses_bind(&clt->ses, clt->ses.host_addr) < 0) {
+        nw_addr_t *host_addr = clt->ses.host_addr;
+        memset(host_addr, 0, sizeof(nw_addr_t));
+        host_addr->family = AF_UNIX;
+        host_addr->addrlen = sizeof(host_addr->un);
+        host_addr->un.sun_family = AF_UNIX;
+        generate_local_path(host_addr->un.sun_path, sizeof(host_addr->un.sun_path));
+        if (nw_ses_bind(&clt->ses, host_addr) < 0) {
+            int bind_errno = errno;
+            clt_close(clt);
+            errno = bind_errno;
             return -1;
         }
+        clt->local_path_bound = true;
     }
 
     if (clt->ses.sock_type == SOCK_STREAM || clt->ses.sock_type == SOCK_SEQPACKET) {
         clt->connected = false;
         clt->on_connect_called = false;
-        int ret = nw_ses_connect(&clt->ses, &clt->ses.peer_addr);
-        if (ret < 0) {
-            if (clt->type.on_close) {
-                ret = clt->type.on_close(&clt->ses);
-            }
-            clt_close(clt);
-            if (ret > 0) {
-                nw_clt_start(clt);
-            } else {
-                reconnect_later(clt);
-            }
+        if (nw_ses_connect(&clt->ses, &clt->ses.peer_addr) < 0) {
+            /* failed on the spot (unix path missing, backlog full ...):
+             * same handling as a failure reported later by the loop */
+            on_connect(&clt->ses, false);
+            return 0;
         }
         if (!clt->on_connect_called) {
             watch_connect(clt);
@@ -275,6 +278,9 @@ int nw_clt_close(nw_clt *clt)
 
 void nw_clt_release(nw_clt *clt)
 {
+    /* stops the connect/reconnect timer: libev must not keep a pointer
+     * into the memory freed below */
+    clt_close(clt);
     nw_ses_release(&clt->ses);
     if (!clt->custom_buf_pool && clt->buf_pool) {
         nw_buf_pool_release(clt->buf_pool);
@@ -287,4 +293,3 @@ bool nw_clt_connected(nw_clt *clt)
 {
     return clt->connected;
 }
-

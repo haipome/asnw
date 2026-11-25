@@ -1,9 +1,10 @@
 /*
- * Description: 
+ * Description: table of pending states with timeout
  *     History: yang@haipo.me, 2016/03/22, create
  */
 
 # include <stdlib.h>
+# include <string.h>
 # include <stdbool.h>
 
 # include "nw_state.h"
@@ -80,33 +81,43 @@ static void state_release(nw_state *context, nw_state_entry *entry)
     nw_cache_free(context->cache, entry);
 }
 
-static void state_remove(nw_state *context, nw_state_entry *entry)
+/* take the entry out of the hash table, it stays allocated */
+static bool state_unlink(nw_state *context, nw_state_entry *entry)
 {
     uint32_t index = entry->id & context->table_mask;
     nw_state_entry *curr = context->table[index];
     nw_state_entry *prev = NULL;
     while (curr) {
-        if (curr->id == entry->id) {
+        if (curr == entry) {
             if (prev) {
                 prev->next = entry->next;
             } else {
                 context->table[index] = entry->next;
             }
-            state_release(context, entry);
             context->used--;
-            return;
+            return true;
         }
         prev = curr;
         curr = curr->next;
     }
+    return false;
+}
+
+static void state_remove(nw_state *context, nw_state_entry *entry)
+{
+    if (state_unlink(context, entry))
+        state_release(context, entry);
 }
 
 static void on_timeout(struct ev_loop *loop, ev_timer *ev, int events)
 {
     nw_state_entry *entry = (nw_state_entry *)ev;
     nw_state *context = entry->context;
+    /* unlink first: whatever the callback does with this id (del, mod,
+     * add it again) can no longer touch the entry being timed out */
+    state_unlink(context, entry);
     context->type.on_timeout(entry);
-    state_remove(context, entry);
+    state_release(context, entry);
 }
 
 static uint32_t get_available_id(nw_state *context)
@@ -248,4 +259,3 @@ void nw_state_iterator_release(nw_state_iterator *iter)
 {
     free(iter);
 }
-
