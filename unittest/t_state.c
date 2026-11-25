@@ -82,14 +82,14 @@ int main(void)
     CHECK(nw_state_get(state, c_id) == c);
     CHECK_EQ(nw_state_count(state), 1);
 
-    /* grow well past the initial 64 buckets * 4 load factor */
+    /* grow well past the initial 64 buckets */
     for (int i = 0; i < 2000; ++i) {
         nw_state_entry *e = nw_state_add(state, 60.0, 0);
         CHECK(e != NULL);
         ((struct data *)e->data)->value = i;
     }
     CHECK_EQ(nw_state_count(state), 2001);
-    CHECK(state->table_size > 64);
+    CHECK(state->dict->size > 64);
     CHECK(nw_state_get(state, c_id) == c);
 
     nw_state_iterator *iter = nw_state_get_iterator(state);
