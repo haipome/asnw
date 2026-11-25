@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: example: rpc server
  *     History: yang@haipo.me, 2016/03/30, create
  */
 
@@ -66,4 +66,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

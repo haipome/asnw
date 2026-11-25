@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: ut_rpc client, a nw_clt speaking rpc_pkg with failover
  *     History: yang@haipo.me, 2016/03/30, create
  */
 
@@ -104,6 +104,9 @@ rpc_clt *rpc_clt_create(rpc_clt_cfg *cfg, rpc_clt_type *type)
 
     rpc_clt *clt = malloc(sizeof(rpc_clt));
     assert(clt != NULL);
+    /* curr_index must start at 0: on_close reads it before the first
+     * successful connect ever sets it */
+    memset(clt, 0, sizeof(rpc_clt));
 
     clt->raw_clt = nw_clt_create(&raw_cfg, &raw_type, clt);
     if (clt->raw_clt == NULL) {
@@ -163,4 +166,3 @@ bool rpc_clt_connected(rpc_clt *clt)
 {
     return nw_clt_connected(clt->raw_clt);
 }
-

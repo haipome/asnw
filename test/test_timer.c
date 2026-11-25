@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: example: repeating timer
  *     History: yang@haipo.me, 2016/03/20, create
  */
 
@@ -31,4 +31,3 @@ int main()
 
     return 0;
 }
-

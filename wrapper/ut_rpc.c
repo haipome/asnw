@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: ut_rpc, a simple rpc protocol on top of asnw: packet format
  *     History: yang@haipo.me, 2016/03/30, create
  */
 
@@ -8,28 +8,13 @@
 # include <time.h>
 # include <assert.h>
 # include <endian.h>
-# include <byteswap.h>
 # include <sys/time.h>
 # include <unistd.h>
 
 # include "ut_rpc.h"
 # include "ut_crc32.h"
 
-# if __BYTE_ORDER == __LITTLE_ENDIAN
-#  define htole16(x) (x)
-#  define htole32(x) (x)
-#  define htole64(x) (x)
-#  define le16toh(x) (x)
-#  define le32toh(x) (x)
-#  define le64toh(x) (x)
-# else
-#  define htole16(x) bswap_16(x)
-#  define htole32(x) bswap_32(x)
-#  define htole64(x) bswap_64(x)
-#  define le16toh(x) bswap_16(x)
-#  define le32toh(x) bswap_32(x)
-#  define le64toh(x) bswap_64(x)
-# endif
+/* htole16/32/64 and le16/32/64toh come from <endian.h> */
 
 int rpc_decode(nw_ses *ses, void *data, size_t max)
 {
@@ -117,4 +102,3 @@ double current_timestamp(void)
     gettimeofday(&tv, NULL);
     return (double)tv.tv_sec + tv.tv_usec / 1000000.0;
 }
-

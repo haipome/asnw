@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: table of pending states with timeout
  *     History: yang@haipo.me, 2016/03/22, create
  */
 
@@ -259,4 +259,3 @@ void nw_state_iterator_release(nw_state_iterator *iter)
 {
     free(iter);
 }
-

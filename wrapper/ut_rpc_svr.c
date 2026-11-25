@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: ut_rpc server, a nw_svr speaking rpc_pkg
  *     History: yang@haipo.me, 2016/03/29, create
  */
 
@@ -143,4 +143,3 @@ void rpc_svr_close_clt(rpc_svr *svr, nw_ses *ses)
 {
     nw_svr_close_clt(svr->raw_svr, ses);
 }
-

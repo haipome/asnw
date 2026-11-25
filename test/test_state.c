@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: example: nw_state add, modify, iterate and timeout
  *     History: yang@haipo.me, 2016/03/23, create
  */
 
@@ -82,4 +82,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

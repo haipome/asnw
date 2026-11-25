@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: example: one listener process passes connections to worker processes
  *     History: yang@haipo.me, 2016/03/23, create
  */
 
@@ -307,9 +307,10 @@ int main(int argc, char *argv[])
         }
     }
 
-    daemon(true, true);
+    if (daemon(true, true) < 0) {
+        error(1, errno, "daemon fail");
+    }
     nw_loop_run();
 
     return 0;
 }
-

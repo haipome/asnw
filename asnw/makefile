@@ -3,7 +3,7 @@ OBJS    := $(patsubst %.c, %.o, $(SOURCE))
 CC      := gcc
 CFLAGS  := -Wall -Wextra -Wno-unused-parameter -Wno-pointer-arith -Wno-strict-aliasing -g -std=gnu11 -MMD -MP
 
-.PHONY : all clean install 
+.PHONY : all clean
 
 TARGET  := libasnw.a
 
@@ -18,4 +18,3 @@ $(TARGET) : $(OBJS)
 	$(CC) $(CFLAGS) -c -o $@ $< $(INCS)
 
 -include $(OBJS:.o=.d)
-

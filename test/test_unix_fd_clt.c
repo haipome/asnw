@@ -1,19 +1,19 @@
 /*
- * Description: 
+ * Description: plain socket client for trying a server: passes a file descriptor over seqpacket
  *     History: yang@haipo.me, 2016/03/21, create
  */
 
-# include <stdio.h>  
+# include <stdio.h>
 # include <time.h>
-# include <stdlib.h>  
-# include <errno.h>  
+# include <stdlib.h>
+# include <errno.h>
 # include <error.h>
 # include <unistd.h>
-# include <string.h>  
+# include <string.h>
 # include <fcntl.h>
 # include <sys/types.h>
-# include <sys/stat.h>  
-# include <sys/socket.h>  
+# include <sys/stat.h>
+# include <sys/socket.h>
 # include <sys/un.h>
 
 int main(int argc, char *argv[])
@@ -33,7 +33,7 @@ int main(int argc, char *argv[])
     strncpy(un.sun_path, argv[1], sizeof(un.sun_path) - 1);
 
     if (connect(sockfd, (struct sockaddr *)&un, sizeof(un)) < 0) {
-        error(1, errno, "conect fail");
+        error(1, errno, "connect fail");
     }
 
     int fd = open(argv[2], 0);
@@ -82,4 +82,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

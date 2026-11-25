@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: the event loop, a thin layer over libev
  *     History: yang@haipo.me, 2016/03/19, create
  */
 
@@ -45,11 +45,10 @@ void nw_loop_run(void)
 {
     if (!initialized)
         return;
-    
+
     running = 1;
     ev_run(nw_default_loop, 0);
     running = 0;
-    return;
 }
 
 void nw_loop_break(void)
@@ -61,7 +60,6 @@ void nw_loop_break(void)
 
     ev_break(nw_default_loop, EVBREAK_ALL);
     running = 0;
-    return;
 }
 
 static void on_break_timer(struct ev_loop *loop, ev_timer *ev, int events)
@@ -81,4 +79,3 @@ void nw_loop_break_later(double waittime)
         ev_timer_start(nw_default_loop, &break_timer);
     }
 }
-

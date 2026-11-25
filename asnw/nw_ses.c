@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: network session, one socket with its buffers and callbacks
  *     History: yang@haipo.me, 2016/03/19, create
  */
 
@@ -300,7 +300,7 @@ static void on_can_read(nw_ses *ses)
 
                 struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
                 if (cmsg != NULL) {
-                    if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type==SCM_RIGHTS) {
+                    if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
                         int fd;
                         memcpy(&fd, CMSG_DATA(cmsg), sizeof(fd));
                         ses->on_recv_fd(ses, fd);
@@ -666,4 +666,3 @@ int nw_ses_release(nw_ses *ses)
 
     return 0;
 }
-

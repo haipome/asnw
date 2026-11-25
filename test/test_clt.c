@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: example: nw_clt sending a ping every second
  *     History: yang@haipo.me, 2016/03/22, create
  */
 
@@ -49,7 +49,7 @@ void on_recv_pkg(nw_ses *ses, void *data, size_t size)
 
 void on_error_msg(nw_ses *ses, const char *msg)
 {
-    printf("error occur: %s, perr: %s\n", msg, nw_sock_human_addr(&ses->peer_addr));
+    printf("error: %s, peer: %s\n", msg, nw_sock_human_addr(&ses->peer_addr));
 }
 
 void on_timeout(nw_timer *timer, void *privdata)
@@ -97,4 +97,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

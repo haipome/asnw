@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: server, listens on one or more addresses
  *     History: yang@haipo.me, 2016/03/20, create
  */
 
@@ -189,7 +189,7 @@ nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
 {
     nw_loop_init();
 
-    if (cfg->bind_count == 0) 
+    if (cfg->bind_count == 0)
         return NULL;
     if (cfg->max_pkg_size == 0)
         return NULL;
@@ -341,4 +341,3 @@ void nw_svr_close_clt(nw_svr *svr, nw_ses *ses)
     nw_cache_free(svr->clt_cache, ses);
     svr->clt_count--;
 }
-

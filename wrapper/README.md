@@ -1,1 +1,1 @@
-ut_rpc is a simple rpc solution, with a common header and heartbeat check.
+ut_rpc is a simple rpc layer built on nw_svr and nw_clt: a common packet header with checksum, heartbeats, and a client that fails over between several server addresses. See ut_rpc.h for the packet format.

@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: client, keeps a connection to one address
  *     History: yang@haipo.me, 2016/03/22, create
  */
 
@@ -293,4 +293,3 @@ bool nw_clt_connected(nw_clt *clt)
 {
     return clt->connected;
 }
-

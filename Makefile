@@ -61,9 +61,6 @@ $(LIB): $(LIB_OBJ)
 $(RPC_LIB): $(RPC_OBJ)
 	ar rcs $@ $^
 
-# examples are old code, keep their warnings out of the way
-$(B)/test/% $(B)/c1000k/% $(B)/wrapper/%: CFLAGS += -w
-
 $(B)/%: $(B)/%.o $(RPC_LIB) $(LIB)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 

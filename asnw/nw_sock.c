@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: address type, address parsing and socket option helpers
  *     History: yang@haipo.me, 2016/03/16, create
  */
 
@@ -9,14 +9,13 @@
 # include <strings.h>
 # include <errno.h>
 # include <fcntl.h>
-# include <netdb.h>
 # include <unistd.h>
 
 # include "nw_sock.h"
 
 char *nw_sock_human_addr(nw_addr_t *addr)
 {
-    static char str[128];
+    static char str[NW_HUMAN_ADDR_SIZE];
     char ip[INET6_ADDRSTRLEN];
 
     switch (addr->family) {
@@ -106,8 +105,7 @@ int nw_sock_set_mode(nw_addr_t *addr, mode_t mode)
 int nw_sock_peer_addr(int sockfd, nw_addr_t *addr)
 {
     addr->addrlen = sizeof(addr->un);
-    if (getpeername(sockfd, NW_SOCKADDR(addr), &addr->addrlen) == 0)
-    {
+    if (getpeername(sockfd, NW_SOCKADDR(addr), &addr->addrlen) == 0) {
         addr->family = NW_SOCKADDR(addr)->sa_family;
         return 0;
     }
@@ -117,8 +115,7 @@ int nw_sock_peer_addr(int sockfd, nw_addr_t *addr)
 int nw_sock_host_addr(int sockfd, nw_addr_t *addr)
 {
     addr->addrlen = sizeof(addr->un);
-    if (getsockname(sockfd, NW_SOCKADDR(addr), &addr->addrlen) == 0)
-    {
+    if (getsockname(sockfd, NW_SOCKADDR(addr), &addr->addrlen) == 0) {
         addr->family = NW_SOCKADDR(addr)->sa_family;
         return 0;
     }
@@ -157,7 +154,7 @@ static int nw_sock_addr_fill_inet(nw_addr_t *addr, const char *host, const char 
     return 0;
 }
 
-static int nw_sock_addr_fill_unix(nw_addr_t *addr, const char* unix_path)
+static int nw_sock_addr_fill_unix(nw_addr_t *addr, const char *unix_path)
 {
     size_t pathlen = strlen(unix_path);
     if (pathlen == 0 || pathlen >= sizeof(addr->un.sun_path)) {
@@ -306,4 +303,3 @@ int nw_sock_set_reuse_addr(int sockfd)
         return -1;
     return 0;
 }
-

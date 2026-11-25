@@ -43,4 +43,4 @@
 | t_accept_emfile | fd 耗尽时拒绝连接而不空转，恢复后正常 |
 | t_sigpipe | 对端已关闭时发送不触发 SIGPIPE |
 | t_udp_clt_peer、t_unix_dgram_addrlen | 数据报 client 不被第三方改写目标；server 回包地址正确；残包丢弃 |
-| t_rpc、t_rpc_decode | ut_rpc 请求/应答、心跳保活；长度与 crc 校验 |
+| t_rpc、t_rpc_decode、t_rpc_failover | ut_rpc 请求/应答、心跳保活；长度与 crc 校验；首个地址不可用时切换到下一个 |

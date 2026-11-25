@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: thread pool, runs blocking work off the loop thread
  *     History: yang@haipo.me, 2016/04/17, create
  */
 
@@ -257,4 +257,3 @@ void nw_job_release(nw_job *job)
     job->reply_head = job->reply_tail = NULL;
     nw_job_free(job);
 }
-
