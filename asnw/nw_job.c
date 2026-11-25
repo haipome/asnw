@@ -5,11 +5,9 @@
 
 # include <stdlib.h>
 # include <string.h>
-# include <unistd.h>
-# include <assert.h>
+# include <signal.h>
 
 # include "nw_job.h"
-# include "nw_sock.h"
 
 struct thread_arg {
     nw_job *job;
@@ -24,87 +22,64 @@ static void *thread_routine(void *data)
     free(data);
 
     for (;;) {
-        pthread_mutex_lock(&job->lock);
-        while ((job->request_count == 0) && (!job->shutdown)) {
-            pthread_cond_wait(&job->notify, &job->lock);
+        pthread_mutex_lock(&job->request_lock);
+        while (job->request_head == NULL && !job->shutdown) {
+            pthread_cond_wait(&job->notify, &job->request_lock);
         }
         if (job->shutdown) {
+            pthread_mutex_unlock(&job->request_lock);
             break;
         }
-        assert(job->request_head != NULL);
         nw_job_entry *entry = job->request_head;
         job->request_head = entry->next;
-        if (job->request_head) {
-            job->request_head->prev = NULL;
-        } else {
+        if (job->request_head == NULL)
             job->request_tail = NULL;
-        }
-        job->request_count -= 1;
-        pthread_mutex_unlock(&job->lock);
+        pthread_mutex_unlock(&job->request_lock);
 
         job->type.on_job(entry, privdata);
 
-        pthread_mutex_lock(&job->lock);
+        entry->next = NULL;
+        pthread_mutex_lock(&job->reply_lock);
         if (job->reply_tail) {
-            entry->prev = job->reply_tail;
-            entry->next = NULL;
             job->reply_tail->next = entry;
-            job->reply_tail = entry;
         } else {
-            entry->prev = NULL;
-            entry->next = NULL;
             job->reply_head = entry;
-            job->reply_tail = entry;
         }
-        job->reply_count += 1;
-        /* wake the loop thread. the pipe is non blocking: if it is full
-         * there are wake-ups pending already, so a failed write is fine */
-        if (write(job->pipefd[1], " ", 1) < 0) {
-        }
-        pthread_mutex_unlock(&job->lock);
+        job->reply_tail = entry;
+        pthread_mutex_unlock(&job->reply_lock);
+        /* wake the loop thread. several of these before it gets there
+         * amount to one wake-up */
+        ev_async_send(job->loop, &job->wakeup);
     }
 
-    pthread_mutex_unlock(&job->lock);
     return privdata;
 }
 
-static void on_can_read(struct ev_loop *loop, ev_io *watcher, int events)
+/* on the loop thread: deliver what is done */
+static void on_wakeup(struct ev_loop *loop, ev_async *watcher, int events)
 {
-    nw_job *job = (nw_job *)watcher;
-    for (;;) {
-        char c;
-        int ret = read(job->pipefd[0], &c, 1);
-        if (ret < 0)
-            break;
-    }
+    nw_job *job = watcher->data;
+    pthread_mutex_lock(&job->reply_lock);
+    nw_job_entry *entry = job->reply_head;
+    job->reply_head = NULL;
+    job->reply_tail = NULL;
+    pthread_mutex_unlock(&job->reply_lock);
 
-    for (;;) {
-        pthread_mutex_lock(&job->lock);
-        if (job->reply_count == 0) {
-            pthread_mutex_unlock(&job->lock);
-            break;
-        }
-        nw_job_entry *entry = job->reply_head;
-        job->reply_head = entry->next;
-        if (job->reply_head) {
-            job->reply_head->prev = NULL;
-        } else {
-            job->reply_tail = NULL;
-        }
-        job->reply_count -= 1;
-        pthread_mutex_unlock(&job->lock);
-
+    while (entry) {
+        nw_job_entry *next = entry->next;
         if (job->type.on_finish)
             job->type.on_finish(entry);
         if (job->type.on_cleanup)
             job->type.on_cleanup(entry);
         nw_cache_free(job->cache, entry);
+        entry = next;
     }
 }
 
 static void nw_job_free(nw_job *job)
 {
-    pthread_mutex_destroy(&job->lock);
+    pthread_mutex_destroy(&job->request_lock);
+    pthread_mutex_destroy(&job->reply_lock);
     pthread_cond_destroy(&job->notify);
     if (job->threads)
         free(job->threads);
@@ -141,15 +116,9 @@ nw_job *nw_job_create(nw_job_type *type, int thread_count)
     nw_loop_init();
     job->type = *type;
     job->loop = nw_default_loop;
-    if (pthread_mutex_init(&job->lock, NULL) != 0) {
-        free(job);
-        return NULL;
-    }
-    if (pthread_cond_init(&job->notify, NULL) != 0) {
-        pthread_mutex_destroy(&job->lock);
-        free(job);
-        return NULL;
-    }
+    pthread_mutex_init(&job->request_lock, NULL);
+    pthread_mutex_init(&job->reply_lock, NULL);
+    pthread_cond_init(&job->notify, NULL);
     job->thread_count = thread_count;
     job->threads = calloc(job->thread_count, sizeof(pthread_t));
     if (job->threads == NULL) {
@@ -161,20 +130,20 @@ nw_job *nw_job_create(nw_job_type *type, int thread_count)
         nw_job_free(job);
         return NULL;
     }
-    if (pipe(job->pipefd) != 0) {
-        nw_job_free(job);
-        return NULL;
-    }
-    nw_sock_set_nonblock(job->pipefd[0]);
-    nw_sock_set_nonblock(job->pipefd[1]);
-    ev_io_init(&job->ev, on_can_read, job->pipefd[0], EV_READ);
-    ev_io_start(job->loop, &job->ev);
+    ev_async_init(&job->wakeup, on_wakeup);
+    job->wakeup.data = job;
+    ev_async_start(job->loop, &job->wakeup);
 
+    /* signals are for the threads of the application, not for the workers */
+    sigset_t all, old;
+    sigfillset(&all);
+    pthread_sigmask(SIG_BLOCK, &all, &old);
+    bool failed = false;
     for (int i = 0; i < job->thread_count; ++i) {
         struct thread_arg *arg = malloc(sizeof(struct thread_arg));
         if (arg == NULL) {
-            nw_job_release(job);
-            return NULL;
+            failed = true;
+            break;
         }
         memset(arg, 0, sizeof(struct thread_arg));
         arg->job = job;
@@ -182,24 +151,29 @@ nw_job *nw_job_create(nw_job_type *type, int thread_count)
             arg->privdata = job->type.on_init();
             if (arg->privdata == NULL) {
                 free(arg);
-                nw_job_release(job);
-                return NULL;
+                failed = true;
+                break;
             }
         }
         if (pthread_create(&job->threads[i], NULL, thread_routine, arg) != 0) {
             if (arg->privdata)
                 job->type.on_release(arg->privdata);
             free(arg);
-            nw_job_release(job);
-            return NULL;
+            failed = true;
+            break;
         }
         job->thread_start++;
+    }
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+    if (failed) {
+        nw_job_release(job);
+        return NULL;
     }
 
     return job;
 }
 
-int nw_job_add(nw_job *job, uint32_t id, void *request)
+int nw_job_add(nw_job *job, uint64_t id, void *request)
 {
     nw_job_entry *entry = nw_cache_alloc(job->cache);
     if (entry == NULL)
@@ -208,35 +182,25 @@ int nw_job_add(nw_job *job, uint32_t id, void *request)
     entry->id = id;
     entry->request = request;
 
-    pthread_mutex_lock(&job->lock);
+    pthread_mutex_lock(&job->request_lock);
     if (job->request_tail) {
-        entry->prev = job->request_tail;
-        entry->next = NULL;
         job->request_tail->next = entry;
-        job->request_tail = entry;
     } else {
-        entry->prev = NULL;
-        entry->next = NULL;
         job->request_head = entry;
-        job->request_tail = entry;
     }
-    job->request_count += 1;
+    job->request_tail = entry;
     pthread_cond_signal(&job->notify);
-    pthread_mutex_unlock(&job->lock);
+    pthread_mutex_unlock(&job->request_lock);
 
     return 0;
 }
 
 void nw_job_release(nw_job *job)
 {
-    pthread_mutex_lock(&job->lock);
-    if (job->shutdown) {
-        pthread_mutex_unlock(&job->lock);
-        return;
-    }
+    pthread_mutex_lock(&job->request_lock);
     job->shutdown = true;
     pthread_cond_broadcast(&job->notify);
-    pthread_mutex_unlock(&job->lock);
+    pthread_mutex_unlock(&job->request_lock);
     for (int i = 0; i < job->thread_start; ++i) {
         void *privdata = NULL;
         if (pthread_join(job->threads[i], &privdata) != 0) {
@@ -246,9 +210,7 @@ void nw_job_release(nw_job *job)
             job->type.on_release(privdata);
         }
     }
-    ev_io_stop(job->loop, &job->ev);
-    close(job->pipefd[0]);
-    close(job->pipefd[1]);
+    ev_async_stop(job->loop, &job->wakeup);
     /* all workers are gone, no lock needed. requests still queued and
      * replies not yet delivered get on_cleanup (not on_finish) */
     drop_entries(job, job->request_head);

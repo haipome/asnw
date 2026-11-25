@@ -33,15 +33,15 @@
  */
 
 typedef struct nw_job_entry {
-    /* the id given to nw_job_add, yours to use: e.g. a nw_state id that
-     * leads back to the session waiting for the result */
-    uint32_t id;
+    /* the id given to nw_job_add, yours to use: the id of the connection
+     * waiting for the result (ses->id), or a nw_state id that leads back
+     * to it */
+    uint64_t id;
     /* the request given to nw_job_add */
     void *request;
     /* the result, set by on_job. NULL until then */
     void *reply;
     struct nw_job_entry *next;
-    struct nw_job_entry *prev;
 } nw_job_entry;
 
 typedef struct nw_job_type {
@@ -78,23 +78,23 @@ typedef struct nw_job_type {
 
 /* internal, don't touch the fields */
 typedef struct nw_job {
-    ev_io ev;
     nw_job_type type;
     struct ev_loop *loop;
-    int pipefd[2];
-    pthread_mutex_t lock;
-    pthread_cond_t notify;
     nw_cache *cache;
     int thread_count;
     int thread_start;
     pthread_t *threads;
+    /* jobs waiting for a worker */
+    pthread_mutex_t request_lock;
+    pthread_cond_t notify;
     bool shutdown;
     nw_job_entry *request_head;
     nw_job_entry *request_tail;
-    int request_count;
+    /* jobs done, waiting for the loop thread, which wakeup calls */
+    pthread_mutex_t reply_lock;
     nw_job_entry *reply_head;
     nw_job_entry *reply_tail;
-    int reply_count;
+    ev_async wakeup;
 } nw_job;
 
 /* create a pool of thread_count workers (at least 1) and start them. type
@@ -106,7 +106,7 @@ nw_job *nw_job_create(nw_job_type *type, int thread_count);
  * return 0, or -1 if out of memory. call it from the loop thread only.
  * the queue has no upper bound: if jobs are added faster than the workers
  * finish them, memory grows */
-int nw_job_add(nw_job *job, uint32_t id, void *request);
+int nw_job_add(nw_job *job, uint64_t id, void *request);
 
 /* stop the workers and free the pool. it blocks until the jobs being
  * processed right now are done. jobs still queued are not run, and results

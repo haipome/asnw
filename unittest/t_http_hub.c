@@ -44,7 +44,6 @@ static void check_thread(nw_ses *ses)
 
 struct work {
     nw_http_svr *svr;
-    uint64_t id;
     int value;
 };
 
@@ -66,9 +65,10 @@ static void on_job_finish(nw_job_entry *entry)
     rsp.status = 200;
     rsp.body = body;
     rsp.body_size = snprintf(body, sizeof(body), "job %d on %d", work->value, nw_hub_index(work->svr->hub));
-    if (nw_hub_index(work->svr->hub) != (int)nw_hub_index_of(work->id))
+    /* the id of the job is the id of the connection */
+    if (nw_hub_index(work->svr->hub) != (int)nw_hub_index_of(entry->id))
         ADD(wrong);
-    if (nw_http_reply_id(work->svr, work->id, &rsp) != 0)
+    if (nw_http_reply_id(work->svr, entry->id, &rsp) != 0)
         ADD(wrong);
     ADD(jobs_done);
 }
@@ -96,9 +96,8 @@ static void on_request(nw_ses *ses, nw_http_request *req)
     } else if (strcmp(req->path, "/job") == 0) {
         struct work *work = malloc(sizeof(struct work));
         work->svr = svr;
-        work->id = ses->id;
         work->value = atoi(req->query);
-        CHECK_EQ(nw_job_add(job, 0, work), 0);
+        CHECK_EQ(nw_job_add(job, ses->id, work), 0);
     } else if (strcmp(req->path, "/echo") == 0) {
         CHECK_EQ(nw_http_reply_text(ses, 200, "application/octet-stream", req->body, req->body_size), 0);
     } else {
