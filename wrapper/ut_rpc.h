@@ -11,7 +11,8 @@
 
 /*
  * ut_rpc is an example of wrapping nw_svr and nw_clt into something higher
- * level. it adds:
+ * level. it is here to be read, not to be used in production: take it as
+ * the starting point of a protocol of your own. it adds:
  *   - a packet format: fixed header, optional ext data, body, checksum
  *   - heartbeats, so that both ends notice a dead connection
  *   - a client that fails over between several server addresses

@@ -32,7 +32,7 @@ Protocols built on the core, which knows nothing about them:
 |--------|------------|
 | `nw_http` | HTTP/1.0 and 1.1 server, with zero copy request parsing. On one thread, or on several with `thread_count`. |
 | `nw_ws` | WebSocket server (RFC 6455): messages, broadcast, pings. On one thread, or on several with `thread_count`. |
-| `wrapper/ut_rpc` | A simple binary RPC protocol, server and client, with heartbeats and failover. Kept outside the library as an example of wrapping it. |
+| `wrapper/ut_rpc` | A simple binary RPC protocol, server and client, with heartbeats and failover. An example of wrapping the library, not a part of it and not meant for production: read it, then write your own. |
 
 ## Build
 
@@ -277,7 +277,7 @@ Built into `build/debug/test/`, `build/debug/wrapper/` and `build/debug/c1000k/`
 | `test/test_timer`, `test/test_state` | Timer and state table |
 | `test/test_*_clt` | Plain socket clients, one per transport, for poking at a server |
 | `c1000k/` | Server and client for a one million connection test |
-| `wrapper/` | `ut_rpc`, an RPC layer built on `nw_svr` and `nw_clt`: a common header with CRC, request / reply / push packets, heartbeats and failover across several server addresses |
+| `wrapper/` | `ut_rpc`, an RPC layer built on `nw_svr` and `nw_clt`: a common header with CRC, request / reply / push packets, heartbeats and failover across several server addresses. For reference only: it shows how to put a protocol of your own on top of the library, and leaves out what a production protocol needs (error reporting, a configurable packet size, versioning) |
 
 ## Testing
 
