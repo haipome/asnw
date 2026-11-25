@@ -43,10 +43,13 @@ int outer_on_accept(nw_ses *ses, int sockfd, nw_addr_t *peer_addr)
         printf("worker: %d, no available worker\n", worker_id);
         return -1;
     }
+    /* pick one of the workers at random */
     int worker = rand() % inner_svr->clt_count;
-    nw_ses *curr = inner_svr->clt_list_head;
+    nw_svr_iterator iter;
+    nw_svr_iter_init(&iter, inner_svr);
+    nw_ses *curr = nw_svr_next(&iter);
     for (int i = 0; i < worker && curr != NULL; ++i) {
-        curr = curr->next;
+        curr = nw_svr_next(&iter);
     }
     if (!curr) {
         return -1;

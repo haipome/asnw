@@ -162,6 +162,11 @@ typedef struct nw_svr_type {
 } nw_svr_type;
 
 /* the fields are for reading only */
+/* lives on the stack of the caller, see nw_svr_iter_init */
+typedef struct nw_svr_iterator {
+    nw_dict_iterator iter;
+} nw_svr_iterator;
+
 typedef struct nw_svr {
     /* the listening / bound sessions, one per bind, in cfg order */
     uint32_t svr_count;
@@ -169,12 +174,8 @@ typedef struct nw_svr {
     nw_svr_type type;
     nw_buf_pool *buf_pool;
     nw_cache *clt_cache;
-    /* the current connections by id, see nw_svr_get_clt */
+    /* the current connections by id, see nw_svr_get_clt and nw_svr_next */
     nw_dict *clt_dict;
-    /* the current connections, linked through nw_ses next / prev. take
-     * `next` before closing an entry while walking the list */
-    nw_ses *clt_list_head;
-    nw_ses *clt_list_tail;
     /* number of current connections */
     uint32_t clt_count;
     uint32_t buf_limit;
@@ -221,6 +222,26 @@ nw_ses *nw_svr_get_clt(nw_svr *svr, uint64_t id);
 /* send to a connection by id: nw_svr_get_clt + nw_ses_send. return 0, or -1
  * if the connection is gone or nw_ses_send failed (see there) */
 int nw_svr_send(nw_svr *svr, uint64_t id, const void *data, size_t size);
+
+/*
+ * walk over the current connections of a server, in no particular order:
+ *
+ *   nw_svr_iterator iter;
+ *   nw_ses *ses;
+ *   nw_svr_iter_init(&iter, svr);
+ *   while ((ses = nw_svr_next(&iter)) != NULL) {
+ *       ...
+ *   }
+ *
+ * closing the connection just returned (nw_svr_close_clt) is allowed, so a
+ * loop that drops idle connections needs no special care. closing other
+ * connections, or a new connection being accepted (it can't happen inside
+ * the loop unless you call nw_svr_add_clt_fd), invalidates the iterator.
+ * dgram binds have no connections and are not visited.
+ */
+void nw_svr_iter_init(nw_svr_iterator *iter, nw_svr *svr);
+/* the next connection, NULL when all were visited */
+nw_ses *nw_svr_next(nw_svr_iterator *iter);
 
 /* add an already connected socket to the server as if it had been accepted
  * here, e.g. a fd received from another process in on_recv_fd. the server

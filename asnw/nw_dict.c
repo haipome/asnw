@@ -27,6 +27,7 @@ nw_dict *nw_dict_create(uint32_t init_size)
     if (dict == NULL)
         return NULL;
     dict->bits = bits;
+    dict->min_bits = bits;
     dict->size = (uint32_t)1 << bits;
     dict->used = 0;
     dict->cache = nw_cache_create(sizeof(nw_dict_entry));
@@ -44,14 +45,26 @@ nw_dict *nw_dict_create(uint32_t init_size)
     return dict;
 }
 
-/* double the table once there is one entry per bucket. if there is no
- * memory for it the dict keeps working with longer chains */
-static void expand_if_needed(nw_dict *dict)
+/*
+ * called before an insert. double the table once there is one entry per
+ * bucket; shrink it when less than one bucket in eight is used, to four
+ * buckets per entry so that it does not grow again right away. if there is
+ * no memory for the new table the dict keeps working with the old one.
+ */
+static void resize_if_needed(nw_dict *dict)
 {
-    if (dict->used < dict->size || dict->bits >= NW_DICT_MAX_BITS)
+    uint32_t new_bits = dict->bits;
+    if (dict->used >= dict->size) {
+        if (dict->bits >= NW_DICT_MAX_BITS)
+            return;
+        new_bits = dict->bits + 1;
+    } else if (dict->bits > dict->min_bits && dict->used < dict->size / 8) {
+        while (new_bits > dict->min_bits && dict->used < ((uint32_t)1 << new_bits) / 4)
+            new_bits--;
+    }
+    if (new_bits == dict->bits)
         return;
 
-    uint32_t new_bits = dict->bits + 1;
     uint32_t new_size = (uint32_t)1 << new_bits;
     nw_dict_entry **new_table = calloc(new_size, sizeof(nw_dict_entry *));
     if (new_table == NULL)
@@ -99,7 +112,7 @@ static int dict_insert(nw_dict *dict, uint64_t key, void *val)
     nw_dict_entry *entry = nw_cache_alloc(dict->cache);
     if (entry == NULL)
         return -1;
-    expand_if_needed(dict);
+    resize_if_needed(dict);
     uint32_t index = bucket_of(key, dict->bits);
     entry->key = key;
     entry->val = val;
