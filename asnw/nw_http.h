@@ -212,8 +212,6 @@ typedef struct nw_http_svr {
     double keep_alive_timeout;
     double request_timeout;
     nw_cache *conn_cache;
-    /* looks for idle and slow connections once a second */
-    nw_timer timer;
     /* sends the pending "100 Continue" */
     nw_timer continue_timer;
     uint64_t *continue_ids;

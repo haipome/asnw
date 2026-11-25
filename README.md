@@ -231,6 +231,8 @@ The protocol name is case insensitive. Hosts are numeric addresses; there is no 
 
 **Send buffering.** `nw_ses_send` writes directly when it can and queues the rest. `buf_limit` caps that queue in units of `max_pkg_size` buffers; the default 0 means unlimited, so set a limit on servers that face untrusted clients. Datagram sends are never queued: a full socket buffer is reported as an error.
 
+**Timeouts and closing.** `idle_timeout` in the server config (optional) drops connections that send nothing for that long; `on_timeout` lets you decide instead, and a connection can be given its own timeout or a deadline. `nw_svr_close_clt` closes at once and drops unsent data. To say something last and have it arrive, send it and call `nw_svr_shutdown_clt`.
+
 **Datagram servers.** The session passed to `on_recv_pkg` is the listening one, and `nw_ses_send` replies to the sender of the datagram being handled. Reply inside the callback, or copy `ses->peer_addr`.
 
 **Clients.** A stream client retries every `reconnect_timeout` seconds (default 1.0), which is also its connect timeout. Return > 0 from `on_close` to retry at once. Check `nw_clt_connected` before sending. A datagram client is usable right after `nw_clt_start` and ignores UDP packets from any address other than its server.
