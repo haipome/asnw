@@ -66,6 +66,7 @@ typedef struct nw_state {
     uint32_t id_start;
 } nw_state;
 
+/* lives on the stack of the caller, see nw_state_iter_init */
 typedef struct nw_state_iterator {
     nw_dict_iterator iter;
 } nw_state_iterator;
@@ -103,17 +104,16 @@ void nw_state_release(nw_state *context);
 /*
  * walk over all entries, in no particular order:
  *
- *   nw_state_iterator *iter = nw_state_get_iterator(context);
+ *   nw_state_iterator iter;
  *   nw_state_entry *entry;
- *   while ((entry = nw_state_next(iter)) != NULL) { ... }
- *   nw_state_iterator_release(iter);
+ *   nw_state_iter_init(&iter, context);
+ *   while ((entry = nw_state_next(&iter)) != NULL) { ... }
  *
  * deleting the entry just returned is allowed; adding entries or deleting
  * other ones invalidates the iterator
  */
-nw_state_iterator *nw_state_get_iterator(nw_state *context);
+void nw_state_iter_init(nw_state_iterator *iter, nw_state *context);
 /* the next entry, NULL when all were visited */
 nw_state_entry *nw_state_next(nw_state_iterator *iter);
-void nw_state_iterator_release(nw_state_iterator *iter);
 
 # endif

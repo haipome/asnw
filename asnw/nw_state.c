@@ -147,23 +147,13 @@ void nw_state_release(nw_state *context)
     free(context);
 }
 
-nw_state_iterator *nw_state_get_iterator(nw_state *context)
+void nw_state_iter_init(nw_state_iterator *iter, nw_state *context)
 {
-    nw_state_iterator *iter = malloc(sizeof(nw_state_iterator));
-    if (iter == NULL)
-        return NULL;
     nw_dict_iter_init(&iter->iter, context->dict);
-
-    return iter;
 }
 
 nw_state_entry *nw_state_next(nw_state_iterator *iter)
 {
     nw_dict_entry *item = nw_dict_next(&iter->iter);
     return item ? item->val : NULL;
-}
-
-void nw_state_iterator_release(nw_state_iterator *iter)
-{
-    free(iter);
 }

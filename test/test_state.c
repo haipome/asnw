@@ -68,15 +68,12 @@ int main(int argc, char *argv[])
     printf("state count: %zu\n", nw_state_count(state));
     printf("state table_size: %u\n", state->dict->size);
 
-    nw_state_iterator *iter = nw_state_get_iterator(state);
-    if (iter == NULL) {
-        error(1, errno, "nw_state_get_iterator fail");
-    }
-    while ((entry = nw_state_next(iter)) != NULL) {
+    nw_state_iterator iter;
+    nw_state_iter_init(&iter, state);
+    while ((entry = nw_state_next(&iter)) != NULL) {
         data = entry->data;
         printf("%u: %s\n", entry->id, data->str);
     }
-    nw_state_iterator_release(iter);
 
     nw_loop_run();
 

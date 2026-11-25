@@ -92,16 +92,15 @@ int main(void)
     CHECK(state->dict->size > 64);
     CHECK(nw_state_get(state, c_id) == c);
 
-    nw_state_iterator *iter = nw_state_get_iterator(state);
-    CHECK(iter != NULL);
+    nw_state_iterator iter;
+    nw_state_iter_init(&iter, state);
     int seen = 0;
     nw_state_entry *e;
-    while ((e = nw_state_next(iter)) != NULL) {
+    while ((e = nw_state_next(&iter)) != NULL) {
         seen++;
         if (e->id % 2 == 0)
             CHECK_EQ(nw_state_del(state, e->id), 0);    /* deleting the current entry is allowed */
     }
-    nw_state_iterator_release(iter);
     CHECK_EQ(seen, 2001);
     CHECK(nw_state_count(state) < 2001);
 
