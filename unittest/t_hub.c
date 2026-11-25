@@ -226,7 +226,7 @@ static bool all_have(int offset, int expect)
 }
 
 /* run the loop until cond holds, 20 seconds at most: the machine may be
- * slow (valgrind, tsan, a busy ci runner). the checks come afterwards */
+ * slow (valgrind, tsan, a busy machine). the checks come afterwards */
 # define WAIT(cond) do { \
     for (int _i = 0; _i < 1000 && !(cond); ++_i) \
         ut_run_for(0.02); \
