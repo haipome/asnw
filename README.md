@@ -4,7 +4,7 @@ A small asynchronous network library for Linux, written in C on top of [libev](h
 
 You describe a server or a client with a config struct and a handful of callbacks; asnw does the sockets, buffering, message framing, reconnecting and timers. One API covers five transports: TCP, UDP, and unix stream / datagram / seqpacket sockets (including file descriptor passing). An HTTP/1.1 server and a WebSocket server are included.
 
-The core is about 4,000 lines and the two protocol servers another 2,400. No dependency other than libev. Single threaded by design: one event loop per thread, no locks.
+The core is about 5,000 lines and the two protocol servers another 2,400. No dependency other than libev. One event loop per thread and no locks in the callbacks; `nw_hub` runs a server on several threads.
 
 The headers in `asnw/` are the reference: every struct field, callback and function is documented there, and each header starts with an overview of its module.
 
@@ -16,6 +16,7 @@ The core:
 |--------|------------|
 | `nw_svr` | Server. One instance can listen on several addresses of different types at once. Finds connections by id, walks them, times them out and closes them in an orderly way. |
 | `nw_clt` | Client. Keeps a connection to one address and reconnects automatically. |
+| `nw_hub` | A `nw_svr` on several threads: one thread accepts, each connection lives on one of N worker threads. Same callbacks, no locks, and sending by id across threads. |
 | `nw_timer` | Call a function after an interval, once or repeatedly. |
 | `nw_state` | Table of pending states that expire, for request tracking with timeouts. |
 | `nw_job` | Thread pool. Work runs on worker threads, results come back on the loop thread. |
@@ -251,6 +252,8 @@ The protocol name is case insensitive. Hosts are numeric addresses; there is no 
 
 **Clients.** A stream client retries every `reconnect_timeout` seconds (default 1.0), which is also how long a connect attempt may take. `on_close` is called once per lost connection or failed attempt; return > 0 from it to retry at once, or call `nw_clt_close` from it to stay closed. Check `nw_clt_connected` before sending. A datagram client is usable right after `nw_clt_start` and ignores UDP packets from any address other than its server.
 
+**Several threads.** `nw_hub` takes the same config and callbacks as `nw_svr` (in `cfg.svr` and `type.svr`) plus a thread count. A connection is given to one worker thread and stays there; its callbacks run on that thread, where `ses->svr` is an ordinary `nw_svr` holding the connections of that thread, so everything above applies unchanged. Connections on different threads reach each other by id: `nw_hub_send`, `nw_hub_close`, `nw_hub_shutdown` and `nw_hub_broadcast` may be called from any thread and queue the request for the thread that owns the connection (`queue_limit` bounds what may wait for a thread that is stuck). What the library cannot do for you: data of your own that several connections share is now used by several threads, so lock it or keep one copy per thread, set up in `on_thread_start`. Stream and seqpacket binds only.
+
 **Threads.** Every thread has an event loop of its own: what a thread creates (servers, clients, timers ...) runs on that thread, inside its `nw_loop_run`. A program with one thread need not think about any of this. Several threads can each run their own loop side by side, as nothing is shared between them, but there is no locking: an object and its connections may only be used by the thread that created them. To pass something to another thread, use a queue of your own and an `ev_async` watcher on the receiver's `nw_default_loop`. A thread other than the main one calls `nw_loop_release` before it exits. For blocking work there is `nw_job`: the work runs on worker threads and its `on_finish` callback runs back on the loop thread.
 
 **Unix sockets.** Binding replaces a stale socket file at the path and makes the socket accessible to all local users (mode 0777).
@@ -263,6 +266,7 @@ Built into `build/debug/test/`, `build/debug/wrapper/` and `build/debug/c1000k/`
 |---------|---------------|
 | `test/echo_server` | Echo server on any number of addresses: `echo_server 'tcp@127.0.0.1:1234' 'stream@/tmp/echo.sock'` |
 | `test/http_server` | HTTP server, try it with curl: `http_server 'tcp@127.0.0.1:8080'` |
+| `test/hub_server` | Chat server on N threads: `hub_server 4 'tcp@127.0.0.1:1234'`, then `nc 127.0.0.1 1234` in a few terminals |
 | `test/ws_server` | WebSocket chat room: `ws_server 'tcp@127.0.0.1:8081'`, then connect from a browser console |
 | `test/test_clt` | Client that pings a server once a second: `test_clt 'tcp@127.0.0.1:1234'` |
 | `test/listener_worker` | One process accepts and hands each connection to one of N worker processes by passing its fd: `listener_worker 'tcp@127.0.0.1:1234' 10` |
