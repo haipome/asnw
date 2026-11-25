@@ -112,6 +112,39 @@ int main(void)
     CHECK_EQ(dict->size, 2048);
     nw_dict_release(dict);
 
+    /* the table shrinks again after a peak, but only on an insert (never
+     * while deleting, an iterator may be at work) and never below the size
+     * it was created with */
+    dict = nw_dict_create(0);
+    for (uint64_t i = 0; i < 100000; ++i)
+        CHECK_EQ(nw_dict_add(dict, i, (void *)(uintptr_t)(i + 1)), 0);
+    uint32_t peak = dict->size;
+    CHECK(peak >= 100000);
+    for (uint64_t i = 100; i < 100000; ++i)
+        CHECK_EQ(nw_dict_del(dict, i), 0);
+    CHECK_EQ(dict->size, peak);
+    CHECK_EQ(nw_dict_add(dict, 1000000, NULL), 0);
+    fprintf(stderr, "after the peak: %u buckets -> %u for %zu entries\n", peak, dict->size, nw_dict_count(dict));
+    CHECK(dict->size <= 1024 && dict->size >= 256);
+    for (uint64_t i = 0; i < 100; ++i)
+        CHECK_EQ((uintptr_t)nw_dict_get(dict, i), i + 1);
+    CHECK_EQ(nw_dict_count(dict), 101);
+    /* growing again from there works, and so does emptying it */
+    for (uint64_t i = 100; i < 5000; ++i)
+        CHECK_EQ(nw_dict_add(dict, i, NULL), 0);
+    CHECK(dict->size >= 5000);
+    nw_dict_clear(dict);
+    CHECK_EQ(nw_dict_add(dict, 1, NULL), 0);
+    CHECK_EQ(dict->size, 64);
+    nw_dict_release(dict);
+
+    /* a dict created big stays at least that big */
+    dict = nw_dict_create(4096);
+    for (uint64_t i = 0; i < 10; ++i)
+        CHECK_EQ(nw_dict_add(dict, i, NULL), 0);
+    CHECK_EQ(dict->size, 4096);
+    nw_dict_release(dict);
+
     check_keys(sequential, "sequential");
     check_keys(aligned, "aligned");
     check_keys(high_bits, "high bits");

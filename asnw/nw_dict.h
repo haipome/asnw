@@ -19,10 +19,17 @@
  * the dict stores the pointers, it does not own what they point to: free
  * your values yourself, before or after removing them.
  *
- * lookup, insert and delete are O(1) on average. the table doubles when it
- * holds as many entries as it has buckets, moving every entry at once, and
- * never shrinks. any key distribution is fine (sequential ids, pointers,
- * multiples of a power of two): keys are mixed before they pick a bucket.
+ * lookup, insert and delete are O(1) on average. any key distribution is
+ * fine (sequential ids, pointers, multiples of a power of two): keys are
+ * mixed before they pick a bucket.
+ *
+ * the table follows the number of entries, moving every entry at once when
+ * it changes size: it doubles when it holds as many entries as it has
+ * buckets, and it shrinks when less than one bucket in eight is in use, so
+ * that walking a dict that was once huge does not stay expensive. it never
+ * gets smaller than it was created. the size only changes inside
+ * nw_dict_add / nw_dict_set, never when deleting, which is what makes
+ * deleting while iterating safe.
  *
  * not thread safe.
  */
@@ -40,6 +47,8 @@ typedef struct nw_dict {
     uint32_t size;
     /* log2 of size */
     uint32_t bits;
+    /* log2 of the size it was created with, the table never gets smaller */
+    uint32_t min_bits;
     /* number of entries */
     uint32_t used;
     nw_cache *cache;
