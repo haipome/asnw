@@ -153,7 +153,6 @@ static void nw_svr_free(nw_svr *svr)
     /* sessions hand their bufs back to the pool, so the pool goes last */
     if (svr->clt_cache)
         nw_cache_release(svr->clt_cache);
-    nw_pool_trimmer_stop(&svr->trimmer);
     if (svr->buf_pool)
         nw_buf_pool_release(svr->buf_pool);
     free(svr);
@@ -302,7 +301,6 @@ nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
         nw_svr_free(svr);
         return NULL;
     }
-    nw_pool_trimmer_start(&svr->trimmer, nw_default_loop, svr->buf_pool);
     svr->clt_cache = nw_cache_create(sizeof(nw_ses));
     if (svr->clt_cache == NULL) {
         nw_svr_free(svr);

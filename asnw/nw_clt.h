@@ -75,8 +75,7 @@ typedef struct nw_clt_cfg {
      *
      * a buf pool to use instead of a private one, to share bufs between
      * many clients. its buf size takes the place of max_pkg_size. it must
-     * outlive the client and is not released with it, nor trimmed: see
-     * nw_buf_pool_trim */
+     * outlive the client and is not released with it */
     nw_buf_pool *buf_pool;
 } nw_clt_cfg;
 
@@ -143,7 +142,6 @@ typedef struct nw_clt {
     nw_clt_type type;
     bool custom_buf_pool;
     nw_buf_pool *buf_pool;
-    nw_pool_trimmer trimmer;
     /* connect timeout while connecting, reconnect delay while waiting */
     nw_timer timer;
     bool connected;

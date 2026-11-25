@@ -178,19 +178,6 @@ void nw_ses_resume_read(nw_ses *ses);
  * internal, used by nw_svr and nw_clt
  */
 
-/* trims a buf pool between the turns of the event loop, when no callback
- * is running that could still be looking at a buf that was given back */
-typedef struct nw_pool_trimmer {
-    ev_prepare prepare;
-    ev_timer more;
-    struct ev_loop *loop;
-    nw_buf_pool *pool;
-    bool started;
-} nw_pool_trimmer;
-
-void nw_pool_trimmer_start(nw_pool_trimmer *trimmer, struct ev_loop *loop, nw_buf_pool *pool);
-void nw_pool_trimmer_stop(nw_pool_trimmer *trimmer);
-
 /* fill in a session. sockfd is set to -1, the caller sets sockfd, sock_type,
  * the addresses and the handlers afterwards. return 0, or -1 if out of memory */
 int nw_ses_init(nw_ses *ses, struct ev_loop *loop, nw_buf_pool *pool, uint32_t buf_limit, int ses_type);

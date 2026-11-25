@@ -31,25 +31,19 @@ typedef struct nw_buf {
 
 /*
  * nw_buf_pool is a factory of nw_buf of one size. freed bufs are kept for
- * reuse, but not without end: nw_buf_pool_trim gives back to the
- * allocator what is waiting beyond the number in use at the moment plus
- * NW_BUF_POOL_KEEP. so the pool follows the load down as well as up - after a peak
- * the bufs of the peak go as the load falls - while a steady load never
- * reaches the allocator.
+ * reuse and only given back to the system by nw_buf_pool_release, so the
+ * pool keeps the memory of its busiest moment.
  *
- * NW_BUF_POOL_KEEP is what an idle pool holds on to.
- *
- * trimming is a step of its own because a buf must not be freed in the
- * middle of a callback that may still be reading it. nw_svr and nw_clt
- * trim their pool between the turns of the event loop; a pool of your own
- * is trimmed when you call nw_buf_pool_trim.
+ * that is on purpose, here and in nw_cache: the memory of something that
+ * was freed stays readable. the library counts on it - a session that was
+ * closed inside a callback is still asked whether it is closed, a callback
+ * that closed its own connection may still be reading its message, an
+ * iterator steps off a deleted entry. don't make them free.
  */
-# define NW_BUF_POOL_KEEP 64
-
 typedef struct nw_buf_pool {
     /* capacity of every buf of this pool */
     uint32_t size;
-    /* number of bufs handed out and not given back yet */
+    /* number handed out and not given back yet */
     uint32_t used;
     /* number of bufs waiting for reuse in free_arr */
     uint32_t free;
@@ -71,18 +65,12 @@ typedef struct nw_buf_list {
     nw_buf *tail;
 } nw_buf_list;
 
-/*
- * nw_cache is a factory of untyped objects of one size. freed objects are
- * kept for reuse, all of them: an object is never given back to the
- * allocator before nw_cache_release. the memory of a freed object
- * therefore stays readable and of the same type, which nw_svr (sessions)
- * and nw_dict (entries) depend on. the price is that a cache keeps the
- * memory of its busiest moment; its objects are small.
- */
+/* nw_cache is a factory of untyped objects of one size, with the same reuse
+ * behaviour as nw_buf_pool */
 typedef struct nw_cache {
     /* size of every object */
     uint32_t size;
-    /* number of objects handed out and not given back yet */
+    /* number handed out and not given back yet */
     uint32_t used;
     /* number of objects waiting for reuse in free_arr */
     uint32_t free;
@@ -111,14 +99,8 @@ void nw_buf_shift(nw_buf *buf);
 nw_buf_pool *nw_buf_pool_create(uint32_t size);
 /* get an empty buf, reused or newly allocated. NULL if out of memory */
 nw_buf *nw_buf_alloc(nw_buf_pool *pool);
-/* give a buf back to the pool it was allocated from, where it waits to be
- * used again. its memory stays valid at least until the next
- * nw_buf_pool_trim */
+/* give a buf back to the pool it was allocated from */
 void nw_buf_free(nw_buf_pool *pool, nw_buf *buf);
-/* free up to `max` of the bufs that wait beyond used + NW_BUF_POOL_KEEP. return how
- * many of those are left. not to be called while a callback of a session
- * that uses the pool is running */
-uint32_t nw_buf_pool_trim(nw_buf_pool *pool, uint32_t max);
 /* free the pool and the bufs waiting for reuse. bufs still in use must be
  * given back first */
 void nw_buf_pool_release(nw_buf_pool *pool);
@@ -148,8 +130,7 @@ nw_cache *nw_cache_create(uint32_t size);
 /* get an object, reused or newly allocated. the content is NOT zeroed.
  * NULL if out of memory */
 void *nw_cache_alloc(nw_cache *cache);
-/* give an object back to the cache it was allocated from. its memory is
- * kept, see nw_cache */
+/* give an object back to the cache it was allocated from */
 void nw_cache_free(nw_cache *cache, void *obj);
 /* free the cache and the objects waiting for reuse. objects still in use
  * must be given back first */

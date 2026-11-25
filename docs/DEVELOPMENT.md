@@ -53,7 +53,6 @@
 | t_flow | 流量控制：`nw_ses_pending`、`on_drain`、暂停/恢复读取（含已读入缓冲的消息、seqpacket、暂停期间对端断开、暂停后 shutdown）；中继场景下不做流控会被断开、做了则积压不超过设定值 |
 | t_read_once | 流式读取每个事件只读一次（读不满就不再读）；数据超过或恰好填满缓冲区、数据和断开一起到达、关闭中的连接 |
 | t_cloexec | 库创建和接受的所有 socket 都是非阻塞加 close-on-exec，`popen` 出来的子进程里看不到它们 |
-| t_pool_shrink | 连接高峰过后 buf 池收缩到保底数量，而不是保留高峰时的全部缓冲区 |
 | t_svr_release | 空闲、带活动连接、多地址 server 的 release；bind 不删除普通文件 |
 | t_accept_emfile | fd 耗尽时拒绝连接而不空转，恢复后正常 |
 | t_sigpipe | 对端已关闭时发送不触发 SIGPIPE |

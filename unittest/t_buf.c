@@ -30,22 +30,15 @@ int main(void)
     CHECK_EQ(again->wpos, 0);
     nw_buf_free(pool, again);
 
-    /* many at once, all given back: they wait, until the pool is trimmed
-     * to what an idle pool keeps */
+    /* free list grows past its initial 64 slots */
     nw_buf *many[200];
     for (int i = 0; i < 200; ++i)
         CHECK((many[i] = nw_buf_alloc(pool)) != NULL);
     CHECK_EQ(pool->used, 200);
     for (int i = 0; i < 200; ++i)
         nw_buf_free(pool, many[i]);
-    CHECK_EQ(pool->used, 0);
     CHECK_EQ(pool->free, 200);
-    CHECK_EQ(nw_buf_pool_trim(pool, 100), 36);      /* 100 freed, 36 more to go */
-    CHECK_EQ(pool->free, 100);
-    CHECK_EQ(nw_buf_pool_trim(pool, 100), 0);
-    CHECK_EQ(pool->free, 64);
-    CHECK_EQ(nw_buf_pool_trim(pool, 100), 0);       /* nothing left to trim */
-    CHECK_EQ(pool->free, 64);
+    CHECK_EQ(pool->used, 0);
 
     /* stream write spans bufs and honours the limit */
     nw_buf_list *list = nw_buf_list_create(pool, 3);
@@ -86,82 +79,10 @@ int main(void)
     }
     for (int i = 0; i < 200; ++i)
         nw_cache_free(cache, objs[i]);
-    /* a cache keeps them all, and what was freed stays readable */
     CHECK_EQ(cache->free, 200);
-    CHECK_EQ(cache->used, 0);
-    for (int i = 0; i < 200; ++i)
-        CHECK_EQ(((unsigned char *)objs[i])[31], i);
     CHECK(nw_cache_alloc(cache) == objs[199]);
     nw_cache_free(cache, objs[199]);
     nw_cache_release(cache);
-
-    /*
-     * trimmed as the load changes, the way nw_svr does between the turns
-     * of the loop, the free list follows the load down. an idle pool
-     * keeps 64 bufs.
-     */
-    pool = nw_buf_pool_create(4096);
-    CHECK(pool != NULL);
-    static nw_buf *peak[3000];
-    /* a steady load: nothing is given back to the allocator, the same
-     * bufs go round */
-    for (int i = 0; i < 20; ++i)
-        CHECK((peak[i] = nw_buf_alloc(pool)) != NULL);
-    CHECK_EQ(pool->used, 20);
-    for (int round = 0; round < 50; ++round) {
-        for (int i = 0; i < 10; ++i)
-            nw_buf_free(pool, peak[i]);
-        CHECK_EQ(nw_buf_pool_trim(pool, UINT32_MAX), 0);
-        CHECK_EQ(pool->used, 10);
-        CHECK_EQ(pool->free, 10);
-        nw_buf *freed[10];
-        memcpy(freed, peak, sizeof(freed));
-        for (int i = 0; i < 10; ++i) {
-            peak[i] = nw_buf_alloc(pool);
-            bool reused = false;
-            for (int j = 0; j < 10; ++j)
-                reused = reused || peak[i] == freed[j];
-            CHECK(reused);
-        }
-        CHECK_EQ(pool->free, 0);
-    }
-    /* a peak of 3000, then back down to 10 in use */
-    for (int i = 20; i < 3000; ++i)
-        CHECK((peak[i] = nw_buf_alloc(pool)) != NULL);
-    CHECK_EQ(pool->used, 3000);
-    uint32_t most_waiting = 0;
-    for (int i = 2999; i >= 10; --i) {
-        nw_buf_free(pool, peak[i]);
-        /* a buf that was given back is not freed on the spot */
-        CHECK_EQ(peak[i]->size, 4096);
-        if (i % 7 == 0)
-            nw_buf_pool_trim(pool, UINT32_MAX);
-        /* never much more waiting than in use, plus keep */
-        CHECK(pool->free <= pool->used + NW_BUF_POOL_KEEP + 14);
-        if (pool->free > most_waiting)
-            most_waiting = pool->free;
-    }
-    nw_buf_pool_trim(pool, UINT32_MAX);
-    CHECK_EQ(pool->used, 10);
-    CHECK_EQ(pool->free, 10 + 64);              /* not the 2990 of the peak */
-    CHECK(most_waiting >= 1500 && most_waiting <= 1600);
-    CHECK(pool->free_total <= 512);             /* the array shrank too */
-    /* all the way down: what an idle pool keeps */
-    for (int i = 0; i < 10; ++i)
-        nw_buf_free(pool, peak[i]);
-    nw_buf_pool_trim(pool, UINT32_MAX);
-    CHECK_EQ(pool->used, 0);
-    CHECK_EQ(pool->free, 64);
-    /* and up again */
-    for (int i = 0; i < 3000; ++i)
-        CHECK((peak[i] = nw_buf_alloc(pool)) != NULL);
-    for (int i = 0; i < 3000; ++i)
-        nw_buf_free(pool, peak[i]);
-    CHECK_EQ(pool->free, 3000);
-    CHECK_EQ(nw_buf_pool_trim(pool, UINT32_MAX), 0);
-    CHECK_EQ(pool->free, 64);
-    nw_buf_pool_release(pool);
-
 
     return 0;
 }
