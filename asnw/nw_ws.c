@@ -17,9 +17,6 @@
 # define NW_WS_HANDSHAKE_TIMEOUT    10.0
 /* an upgrade request is not bigger than this */
 # define NW_WS_HANDSHAKE_MAX_SIZE   8192
-/* how long a connection we are done with is given to answer our close
- * frame before it is closed for good */
-# define NW_WS_LINGER_TIME          2.0
 /* a frame header: 2 bytes, up to 8 bytes of length, 4 bytes of mask */
 # define NW_WS_MAX_HEADER_SIZE      14
 /* a frame up to this size is put together and sent in one write, bigger
@@ -168,14 +165,6 @@ typedef struct nw_ws_conn {
     char *message;
     size_t message_size;
     size_t message_total;
-    /* we are done with this connection: input is thrown away, it is closed
-     * when the client hangs up or at close_time */
-    bool closing;
-    bool write_shut;
-    double close_time;
-    /* when the client was last heard from, when it was last pinged */
-    double active_time;
-    double ping_time;
     /* the per connection data of the application */
     void *privdata;
 } nw_ws_conn;
@@ -191,30 +180,10 @@ void *nw_ws_privdata(nw_ses *ses)
     return conn->privdata;
 }
 
-static double now(void)
-{
-    return ev_now(nw_default_loop);
-}
-
 static void report(nw_ws_svr *svr, nw_ses *ses, const char *msg)
 {
     if (svr->type.on_error_msg)
         svr->type.on_error_msg(ses, msg);
-}
-
-/* stop serving a connection without cutting off what is still on its way
- * to the client: closing a socket that has unread input makes the kernel
- * reset it, and the client may then lose what we just sent */
-static void start_closing(nw_ses *ses, nw_ws_conn *conn)
-{
-    if (conn->closing)
-        return;
-    conn->closing = true;
-    conn->close_time = now() + NW_WS_LINGER_TIME;
-    if (ses->write_buf->count == 0) {
-        shutdown(ses->sockfd, SHUT_WR);
-        conn->write_shut = true;
-    }
 }
 
 /*
@@ -268,7 +237,7 @@ static bool can_send(nw_ses *ses)
     if (ses->ses_type != NW_SES_TYPE_COMMON || ses->id == 0)
         return false;
     nw_ws_conn *conn = ses->privdata;
-    return conn->upgraded && !conn->closing;
+    return conn->upgraded && !ses->closing;
 }
 
 int nw_ws_send_text(nw_ses *ses, const char *message)
@@ -354,17 +323,13 @@ static void ws_close(nw_ses *ses, nw_ws_conn *conn, uint16_t code, const char *r
 
     nw_svr *raw_svr = ses->svr;
     uint64_t id = ses->id;
-    /* closing first: nothing else is sent after the close frame */
-    conn->closing = true;
-    conn->close_time = now() + NW_WS_LINGER_TIME;
     if (send_frame(ses, NW_WS_OP_CLOSE, payload, 2 + reason_size) < 0)
         return;
     if (nw_svr_get_clt(raw_svr, id) != ses)
         return;
-    if (ses->write_buf->count == 0) {
-        shutdown(ses->sockfd, SHUT_WR);
-        conn->write_shut = true;
-    }
+    /* nothing is sent after the close frame, what the client still sends
+     * is ignored, and the connection ends when it hangs up */
+    nw_svr_shutdown_clt(raw_svr, ses);
 }
 
 void nw_ws_close(nw_ses *ses, uint16_t code, const char *reason)
@@ -372,7 +337,7 @@ void nw_ws_close(nw_ses *ses, uint16_t code, const char *reason)
     if (ses->ses_type != NW_SES_TYPE_COMMON || ses->id == 0)
         return;
     nw_ws_conn *conn = ses->privdata;
-    if (conn->closing)
+    if (ses->closing)
         return;
     if (!conn->upgraded) {
         nw_svr_close_clt(ses->svr, ses);
@@ -420,7 +385,7 @@ static void refuse_upgrade(nw_ws_svr *svr, nw_ses *ses, nw_ws_conn *conn, int st
     uint64_t id = ses->id;
     if (nw_ses_send(ses, response, size) < 0 || nw_svr_get_clt(raw_svr, id) != ses)
         return;
-    start_closing(ses, conn);
+    nw_svr_shutdown_clt(raw_svr, ses);
 }
 
 /* does a comma separated header value hold this token, case insensitive */
@@ -549,8 +514,10 @@ static void on_handshake(nw_ws_svr *svr, nw_ses *ses, nw_ws_conn *conn, char *da
     nw_svr *raw_svr = ses->svr;
     uint64_t id = ses->id;
     conn->upgraded = true;
-    conn->active_time = now();
-    conn->ping_time = conn->active_time;
+    /* the handshake made its deadline. from here on the idle timeout paces
+     * the pings, or is the keep-alive timeout itself */
+    nw_svr_set_clt_deadline(raw_svr, ses, 0);
+    nw_svr_set_clt_idle_timeout(raw_svr, ses, svr->ping_interval > 0 ? svr->ping_interval : svr->keep_alive_timeout);
     if (nw_ses_send(ses, response, len) < 0 || nw_svr_get_clt(raw_svr, id) != ses)
         return;
     if (svr->type.on_open)
@@ -567,8 +534,7 @@ static int decode_pkg(nw_ses *ses, void *data, size_t max)
     nw_ws_conn *conn = ses->privdata;
     uint8_t *p = data;
 
-    /* done with this connection: swallow whatever still comes in */
-    if (conn->closing || conn->error)
+    if (conn->error)
         return max;
 
     if (!conn->upgraded) {
@@ -756,10 +722,6 @@ static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
     nw_ws_svr *svr = nw_ws_svr_of(ses);
     nw_ws_conn *conn = ses->privdata;
 
-    if (conn->closing)
-        return;
-    conn->active_time = now();
-
     if (!conn->upgraded) {
         conn->scanned = 0;
         if (conn->error) {
@@ -787,8 +749,8 @@ static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
 
 static void on_new_connection(nw_ses *ses)
 {
-    nw_ws_conn *conn = ses->privdata;
-    conn->active_time = now();
+    /* the upgrade request has to be here in time */
+    nw_svr_set_clt_deadline(ses->svr, ses, NW_WS_HANDSHAKE_TIMEOUT);
 }
 
 static void on_connection_close(nw_ses *ses)
@@ -825,36 +787,23 @@ static void on_privdata_free(void *raw_svr, void *privdata)
     nw_cache_free(svr->conn_cache, privdata);
 }
 
-/* once a second: finish the connections being closed, drop the ones that
- * never upgraded or went silent, ping the quiet ones */
-static void on_timer(nw_timer *timer, void *privdata)
+/* the handshake deadline has passed, or the connection has been silent for
+ * another ping interval (or, without pings, for the keep-alive timeout) */
+static void on_timeout(nw_ses *ses)
 {
-    nw_ws_svr *svr = privdata;
-    double t = now();
-
-    nw_svr_iterator iter;
-    nw_ses *curr;
-    nw_svr_iter_init(&iter, svr->raw_svr);
-    while ((curr = nw_svr_next(&iter)) != NULL) {
-        nw_ws_conn *conn = curr->privdata;
-        if (conn->closing) {
-            if (t >= conn->close_time) {
-                nw_svr_close_clt(svr->raw_svr, curr);
-            } else if (!conn->write_shut && curr->write_buf->count == 0) {
-                shutdown(curr->sockfd, SHUT_WR);
-                conn->write_shut = true;
-            }
-        } else if (!conn->upgraded) {
-            if (t - conn->active_time > NW_WS_HANDSHAKE_TIMEOUT)
-                nw_svr_close_clt(svr->raw_svr, curr);
-        } else if (t - conn->active_time > svr->keep_alive_timeout) {
-            report(svr, curr, "idle too long");
-            ws_close(curr, conn, NW_WS_CLOSE_GOING_AWAY, "idle timeout");
-        } else if (svr->ping_interval > 0 && t - conn->active_time >= svr->ping_interval && \
-                t - conn->ping_time >= svr->ping_interval) {
-            conn->ping_time = t;
-            send_frame(curr, NW_WS_OP_PING, NULL, 0);
-        }
+    nw_ws_svr *svr = nw_ws_svr_of(ses);
+    nw_ws_conn *conn = ses->privdata;
+    if (!conn->upgraded) {
+        nw_svr_close_clt(svr->raw_svr, ses);
+        return;
+    }
+    double silence = ev_now(nw_default_loop) - ses->active_time;
+    if (silence >= svr->keep_alive_timeout) {
+        report(svr, ses, "idle too long");
+        ws_close(ses, conn, NW_WS_CLOSE_GOING_AWAY, "idle timeout");
+    } else {
+        /* a live client answers with a pong, which ends the silence */
+        send_frame(ses, NW_WS_OP_PING, NULL, 0);
     }
 }
 
@@ -919,6 +868,7 @@ nw_ws_svr *nw_ws_svr_create(nw_ws_svr_cfg *cfg, nw_ws_svr_type *type, void *priv
     raw_type.on_new_connection = on_new_connection;
     raw_type.on_connection_close = on_connection_close;
     raw_type.on_error_msg = on_error_msg;
+    raw_type.on_timeout = on_timeout;
     raw_type.on_privdata_alloc = on_privdata_alloc;
     raw_type.on_privdata_free = on_privdata_free;
 
@@ -927,18 +877,13 @@ nw_ws_svr *nw_ws_svr_create(nw_ws_svr_cfg *cfg, nw_ws_svr_type *type, void *priv
         ws_svr_free(svr);
         return NULL;
     }
-    nw_timer_set(&svr->timer, 1.0, true, on_timer, svr);
 
     return svr;
 }
 
 int nw_ws_svr_start(nw_ws_svr *svr)
 {
-    int ret = nw_svr_start(svr->raw_svr);
-    if (ret < 0)
-        return ret;
-    nw_timer_start(&svr->timer);
-    return 0;
+    return nw_svr_start(svr->raw_svr);
 }
 
 int nw_ws_svr_stop(nw_ws_svr *svr)
@@ -948,6 +893,5 @@ int nw_ws_svr_stop(nw_ws_svr *svr)
 
 void nw_ws_svr_release(nw_ws_svr *svr)
 {
-    nw_timer_stop(&svr->timer);
     ws_svr_free(svr);
 }

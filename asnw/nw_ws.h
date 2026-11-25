@@ -13,7 +13,6 @@
 # include "nw_buf.h"
 # include "nw_svr.h"
 # include "nw_http.h"
-# include "nw_timer.h"
 
 /*
  * nw_ws_svr is a websocket server: clients connect to its tcp or unix
@@ -169,8 +168,6 @@ typedef struct nw_ws_svr {
     char *protocol;
     char *origin;
     nw_cache *conn_cache;
-    /* looks for silent connections once a second */
-    nw_timer timer;
 } nw_ws_svr;
 
 /* create a server. cfg and type are copied. return NULL if on_message is
