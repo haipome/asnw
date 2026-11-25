@@ -150,17 +150,6 @@ static int nw_svr_add_clt(nw_ses *ses, int sockfd, nw_addr_t *peer_addr)
     clt->on_error    = on_error;
     clt->on_close    = on_close;
 
-    if (svr->clt_list_tail) {
-        clt->prev = svr->clt_list_tail;
-        svr->clt_list_tail->next = clt;
-        svr->clt_list_tail = clt;
-        clt->next = NULL;
-    } else {
-        svr->clt_list_head = clt;
-        svr->clt_list_tail = clt;
-        clt->prev = NULL;
-        clt->next = NULL;
-    }
     svr->clt_count++;
     nw_ses_start(clt);
 
@@ -313,23 +302,12 @@ int nw_svr_stop(nw_svr *svr)
 void nw_svr_release(nw_svr *svr)
 {
     nw_svr_stop(svr);
-    nw_ses *curr = svr->clt_list_head;
-    while (curr) {
-        nw_ses *next = curr->next;
-        if (svr->type.on_connection_close) {
-            svr->type.on_connection_close(curr);
-        }
-        nw_dict_del(svr->clt_dict, curr->id);
-        if (curr->privdata) {
-            svr->type.on_privdata_free(svr, curr->privdata);
-        }
-        nw_ses_release(curr);
-        nw_cache_free(svr->clt_cache, curr);
-        curr = next;
+    nw_svr_iterator iter;
+    nw_ses *curr;
+    nw_svr_iter_init(&iter, svr);
+    while ((curr = nw_svr_next(&iter)) != NULL) {
+        nw_svr_close_clt(svr, curr);
     }
-    svr->clt_list_head = NULL;
-    svr->clt_list_tail = NULL;
-    svr->clt_count = 0;
     nw_svr_free(svr);
 }
 
@@ -344,16 +322,6 @@ void nw_svr_close_clt(nw_svr *svr, nw_ses *ses)
         svr->type.on_connection_close(ses);
     }
     nw_dict_del(svr->clt_dict, ses->id);
-    if (ses->prev) {
-        ses->prev->next = ses->next;
-    } else {
-        svr->clt_list_head = ses->next;
-    }
-    if (ses->next) {
-        ses->next->prev = ses->prev;
-    } else {
-        svr->clt_list_tail = ses->prev;
-    }
     if (ses->privdata) {
         svr->type.on_privdata_free(svr, ses->privdata);
     }
@@ -373,4 +341,15 @@ int nw_svr_send(nw_svr *svr, uint64_t id, const void *data, size_t size)
     if (ses == NULL)
         return -1;
     return nw_ses_send(ses, data, size);
+}
+
+void nw_svr_iter_init(nw_svr_iterator *iter, nw_svr *svr)
+{
+    nw_dict_iter_init(&iter->iter, svr->clt_dict);
+}
+
+nw_ses *nw_svr_next(nw_svr_iterator *iter)
+{
+    nw_dict_entry *entry = nw_dict_next(&iter->iter);
+    return entry ? entry->val : NULL;
 }

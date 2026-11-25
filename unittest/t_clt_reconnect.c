@@ -73,7 +73,9 @@ int main(void)
 
     /* server drops the connection, client notices and comes back */
     int closes = close_count;
-    nw_svr_close_clt(svr, svr->clt_list_head);
+    nw_svr_iterator iter;
+    nw_svr_iter_init(&iter, svr);
+    nw_svr_close_clt(svr, nw_svr_next(&iter));
     CHECK_EQ(svr->clt_count, 0);
     ut_run_for(2.0);
     CHECK_EQ(close_count, closes + 1);

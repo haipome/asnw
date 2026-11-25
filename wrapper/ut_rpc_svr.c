@@ -67,15 +67,14 @@ static void on_timer(nw_timer *timer, void *privdata)
     rpc_svr *svr = privdata;
     double now = rpc_monotonic_time();
 
-    nw_ses *curr = svr->raw_svr->clt_list_head;
-    nw_ses *next;
-    while (curr) {
-        next = curr->next;
+    nw_svr_iterator iter;
+    nw_ses *curr;
+    nw_svr_iter_init(&iter, svr->raw_svr);
+    while ((curr = nw_svr_next(&iter)) != NULL) {
         struct clt_info *info = curr->privdata;
         if (now - info->last_heartbeat > RPC_HEARTBEAT_TIMEOUT) {
             nw_svr_close_clt(svr->raw_svr, curr);
         }
-        curr = next;
     }
 }
 

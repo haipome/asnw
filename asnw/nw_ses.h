@@ -66,10 +66,6 @@ typedef struct nw_ses {
     /* the nw_svr this session belongs to, NULL for a nw_clt session */
     void *svr;
 
-    /* links of the connection list of a nw_svr (clt_list_head) */
-    struct nw_ses *prev;
-    struct nw_ses *next;
-
     /* event handlers, installed by nw_svr / nw_clt */
     int  (*on_accept)(struct nw_ses *ses, int sockfd, nw_addr_t *peer_addr);
     int  (*decode_pkg)(struct nw_ses *ses, void *data, size_t max);

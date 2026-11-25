@@ -85,19 +85,60 @@ int main(void)
     ut_run_for(0.2);
     CHECK_EQ(svr->clt_count, N);
     CHECK_EQ(nw_dict_count(svr->clt_dict), N);
+    /* the iterator visits every connection exactly once */
+    nw_svr_iterator iter;
+    nw_ses *ses;
     int listed = 0;
-    for (nw_ses *ses = svr->clt_list_head; ses; ses = ses->next) {
+    uint64_t id_sum = 0, expect_sum = 0;
+    nw_svr_iter_init(&iter, svr);
+    while ((ses = nw_svr_next(&iter)) != NULL) {
         CHECK(nw_svr_get_clt(svr, ses->id) == ses);
+        id_sum += ses->id;
         listed++;
     }
     CHECK_EQ(listed, N);
-    for (int i = 0; i < N; i += 2)
-        close(fds[i]);
-    ut_run_for(0.2);
-    CHECK_EQ(svr->clt_count, N / 2);
-    CHECK_EQ(nw_dict_count(svr->clt_dict), N / 2);
+    CHECK(nw_svr_next(&iter) == NULL);
+    for (uint64_t id = b_id + 1; id <= b_id + N; ++id)
+        expect_sum += id;
+    CHECK_EQ(id_sum, expect_sum);
 
-    nw_svr_release(svr);            /* with half of them still connected */
+    /* the connection just returned may be closed while iterating: this is
+     * the loop a heartbeat or idle check runs */
+    int closed = 0;
+    listed = 0;
+    nw_svr_iter_init(&iter, svr);
+    while ((ses = nw_svr_next(&iter)) != NULL) {
+        listed++;
+        if (ses->id % 3 == 0) {
+            nw_svr_close_clt(svr, ses);
+            closed++;
+        }
+    }
+    CHECK_EQ(listed, N);
+    CHECK_EQ(closed, N / 3);
+    CHECK_EQ(svr->clt_count, N - closed);
+    listed = 0;
+    nw_svr_iter_init(&iter, svr);
+    while ((ses = nw_svr_next(&iter)) != NULL) {
+        CHECK(ses->id % 3 != 0);
+        listed++;
+    }
+    CHECK_EQ(listed, N - closed);
+
+    /* clients hanging up are taken out as well */
+    ut_run_for(0.05);
+    int still_open = 0;
+    for (int i = 0; i < N; i += 2) {
+        if (nw_svr_get_clt(svr, b_id + 1 + i) != NULL)
+            still_open++;
+        close(fds[i]);
+    }
+    ut_run_for(0.2);
+    CHECK_EQ(svr->clt_count, N - closed - still_open);
+    CHECK_EQ(nw_dict_count(svr->clt_dict), svr->clt_count);
+
+    CHECK(svr->clt_count > 50);
+    nw_svr_release(svr);            /* with the rest still connected */
     for (int i = 1; i < N; i += 2)
         close(fds[i]);
     return 0;
