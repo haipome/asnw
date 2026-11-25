@@ -327,4 +327,11 @@ nw_ses *nw_svr_next(nw_svr_iterator *iter);
  * in which case fd is still yours to close */
 int nw_svr_add_clt_fd(nw_svr *svr, int fd);
 
+/* same for a connection that was accepted somewhere else on the address of
+ * bind number bind_index (in cfg order) of an identically configured
+ * server: it becomes a connection of that bind here. peer_addr is what
+ * accept said. this is how nw_hub moves connections to its threads.
+ * return 0, or -1 on failure, in which case fd is still yours to close */
+int nw_svr_add_accepted_fd(nw_svr *svr, uint32_t bind_index, int fd, nw_addr_t *peer_addr);
+
 # endif

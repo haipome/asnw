@@ -262,6 +262,16 @@ int nw_svr_add_clt_fd(nw_svr *svr, int fd)
     return nw_svr_add_clt(ses, fd, &peer_addr);
 }
 
+int nw_svr_add_accepted_fd(nw_svr *svr, uint32_t bind_index, int fd, nw_addr_t *peer_addr)
+{
+    if (bind_index >= svr->svr_count)
+        return -1;
+    nw_ses *ses = &svr->svr_list[bind_index];
+    if (ses->sock_type == SOCK_DGRAM)
+        return -1;
+    return nw_svr_add_clt(ses, fd, peer_addr);
+}
+
 nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
 {
     nw_loop_init();
