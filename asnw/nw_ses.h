@@ -76,6 +76,7 @@ typedef struct nw_ses {
     double idle_timeout;
     double idle_mark;
     double deadline;
+    double deadline_span;
     /* set by nw_svr_shutdown_clt: the session is on its way out. nothing
      * more can be sent on it and what it still receives is thrown away */
     bool closing;

@@ -3,6 +3,7 @@
  *     History: yang@haipo.me, 2016/03/20, create
  */
 
+# include <math.h>
 # include <stdlib.h>
 # include <stdio.h>
 # include <string.h>
@@ -18,27 +19,68 @@
 # define NW_SVR_TIMER_MIN       0.05
 
 static void on_error(nw_ses *ses, const char *msg);
+static void on_timer(nw_timer *timer, void *privdata);
 
-/* walk the connections: close the ones done shutting down, report the
- * ones whose idle timeout or deadline has passed */
+/* how often the connections have to be looked at for a timeout of
+ * `period` seconds to be noticed in time */
+static double interval_for(double period)
+{
+    double interval = NW_SVR_TIMER_INTERVAL;
+    if (period < 2 * interval)
+        interval = period / 2;
+    if (interval < NW_SVR_TIMER_MIN)
+        interval = NW_SVR_TIMER_MIN;
+    return interval;
+}
+
+static void set_timer(nw_svr *svr, double interval)
+{
+    nw_timer_stop(&svr->timer);
+    nw_timer_set(&svr->timer, interval, true, on_timer, svr);
+    nw_timer_start(&svr->timer);
+    svr->timer_interval = interval;
+}
+
+/*
+ * walk the connections: close the ones done shutting down, report the
+ * ones whose idle timeout or deadline has passed.
+ *
+ * on the way, note the shortest timeout that is still in force, and let
+ * that decide when to look again. so the timer runs as often as the
+ * connections of the moment need - not as often as some connection once
+ * needed - and stops when none of them has anything to wait for.
+ */
 static void on_timer(nw_timer *timer, void *privdata)
 {
     nw_svr *svr = privdata;
     double now = ev_now(nw_default_loop);
+    double shortest = INFINITY;
+
+    /* timeouts set by the callbacks below are taken into account at the
+     * end, see need_timer */
+    svr->in_sweep = true;
+    svr->sweep_shortest = INFINITY;
 
     nw_svr_iterator iter;
     nw_ses *ses;
     nw_svr_iter_init(&iter, svr);
     while ((ses = nw_svr_next(&iter)) != NULL) {
         if (ses->closing) {
-            if (now >= ses->close_deadline)
+            if (now >= ses->close_deadline) {
                 nw_svr_close_clt(svr, ses);
+            } else if (NW_SVR_LINGER_TIME < shortest) {
+                shortest = NW_SVR_LINGER_TIME;
+            }
             continue;
         }
         bool expired = false;
-        if (ses->deadline > 0 && now >= ses->deadline) {
-            ses->deadline = 0;
-            expired = true;
+        if (ses->deadline > 0) {
+            if (now >= ses->deadline) {
+                ses->deadline = 0;
+                expired = true;
+            } else if (ses->deadline_span < shortest) {
+                shortest = ses->deadline_span;
+            }
         }
         if (ses->idle_timeout > 0) {
             /* silent since the last data, or since the timeout last fired */
@@ -47,6 +89,9 @@ static void on_timer(nw_timer *timer, void *privdata)
                 ses->idle_mark = now;
                 expired = true;
             }
+            /* if it stays open it times out again one period later */
+            if (ses->idle_timeout < shortest)
+                shortest = ses->idle_timeout;
         }
         if (!expired)
             continue;
@@ -57,28 +102,34 @@ static void on_timer(nw_timer *timer, void *privdata)
         }
     }
 
-    /* nobody left to watch: the next connection that needs it starts it again */
-    if (svr->clt_count == 0)
+    svr->in_sweep = false;
+    if (svr->sweep_shortest < shortest)
+        shortest = svr->sweep_shortest;
+    if (shortest == INFINITY) {
+        /* nothing to watch: the next connection that needs it starts it again */
         nw_timer_stop(&svr->timer);
+        svr->timer_interval = 0;
+        return;
+    }
+    double interval = interval_for(shortest);
+    if (interval != svr->timer_interval)
+        set_timer(svr, interval);
 }
 
-/* make sure the timer runs, and often enough for a timeout of `period`
- * seconds to be noticed in time */
+/* a connection got a timeout of `period` seconds: make sure the timer
+ * runs, and often enough for it */
 static void need_timer(nw_svr *svr, double period)
 {
-    double interval = NW_SVR_TIMER_INTERVAL;
-    if (period < 2 * interval)
-        interval = period / 2;
-    if (interval < NW_SVR_TIMER_MIN)
-        interval = NW_SVR_TIMER_MIN;
+    if (svr->in_sweep) {
+        /* the walk in progress sets the timer when it is done */
+        if (period < svr->sweep_shortest)
+            svr->sweep_shortest = period;
+        return;
+    }
+    double interval = interval_for(period);
     if (nw_timer_active(&svr->timer) && svr->timer_interval <= interval)
         return;
-    if (svr->timer_interval > 0 && svr->timer_interval < interval)
-        interval = svr->timer_interval;
-    nw_timer_stop(&svr->timer);
-    nw_timer_set(&svr->timer, interval, true, on_timer, svr);
-    nw_timer_start(&svr->timer);
-    svr->timer_interval = interval;
+    set_timer(svr, interval);
 }
 
 static int create_socket(int family, int sock_type)
@@ -491,5 +542,6 @@ void nw_svr_set_clt_deadline(nw_svr *svr, nw_ses *ses, double timeout)
         return;
     }
     ses->deadline = ev_now(nw_default_loop) + timeout;
+    ses->deadline_span = timeout;
     need_timer(svr, timeout);
 }

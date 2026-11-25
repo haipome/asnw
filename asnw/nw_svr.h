@@ -51,8 +51,9 @@
  * (nw_svr_set_clt_idle_timeout, nw_svr_set_clt_deadline), and on_timeout
  * lets you decide what a timeout means. all of it is checked by one timer
  * that walks the connections about once a second, so timeouts are
- * accurate to about a second, and nothing runs when no connection uses
- * them.
+ * accurate to about a second (the timer runs faster while a connection
+ * has a timeout shorter than two seconds, and slows down again when that
+ * one is gone), and nothing runs when no connection uses them.
  *
  * nw_svr_close_clt closes a connection at once, dropping what was not
  * sent yet. to say something last and be sure it arrives, send it and
@@ -237,6 +238,8 @@ typedef struct nw_svr {
     /* checks timeouts and finishes shutdowns, runs only while needed */
     nw_timer timer;
     double timer_interval;
+    bool in_sweep;
+    double sweep_shortest;
     uint64_t id_start;
     /* the privdata given to nw_svr_create. reach it from a callback with
      * ((nw_svr *)ses->svr)->privdata */

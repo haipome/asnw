@@ -284,6 +284,49 @@ int main(void)
     ut_run_for(0.05);
     nw_svr_release(svr);
 
+    /*
+     * the timer follows the connections of the moment: it speeds up for a
+     * short timeout, slows down again when that one is gone, and stops
+     * when nobody has a timeout left
+     */
+    keep_on_timeout = false;
+    svr = start(30, false);
+    int slow_one = connect_to();
+    ut_run_for(0.05);
+    CHECK(nw_timer_active(&svr->timer));
+    CHECK(svr->timer_interval == 1.0);
+    int quick_one = connect_to();
+    CHECK_EQ(write(quick_one, "quick\n", 6), 6);         /* an idle timeout of 0.2s */
+    ut_run_for(0.05);
+    CHECK(svr->timer_interval == 0.1);
+    ut_run_for(0.5);
+    CHECK_EQ(is_closed(quick_one), 1);                  /* it timed out and is gone */
+    CHECK_EQ(svr->clt_count, 1);
+    ut_run_for(0.3);
+    CHECK(svr->timer_interval == 1.0);                  /* back to once a second */
+    /* a deadline does the same, and goes back when it is cancelled */
+    CHECK_EQ(write(slow_one, "deadline\n", 9), 9);       /* 0.3s */
+    ut_run_for(0.05);
+    CHECK(svr->timer_interval == 0.15);
+    CHECK_EQ(write(slow_one, "cancel\n", 7), 7);
+    ut_run_for(0.4);
+    CHECK(svr->timer_interval == 1.0);
+    CHECK_EQ(svr->clt_count, 1);
+    /* the last timeout is taken away: the timer stops */
+    CHECK_EQ(write(slow_one, "slow\n", 5), 5);
+    ut_run_for(1.3);
+    CHECK_EQ(svr->clt_count, 1);
+    CHECK(!nw_timer_active(&svr->timer));
+    /* and starts again for the next one */
+    CHECK_EQ(write(slow_one, "quick\n", 6), 6);
+    ut_run_for(0.05);
+    CHECK(nw_timer_active(&svr->timer));
+    ut_run_for(0.5);
+    CHECK_EQ(is_closed(slow_one), 1);
+    close(slow_one);
+    close(quick_one);
+    nw_svr_release(svr);
+
     free(buf);
     free(big);
     return 0;
