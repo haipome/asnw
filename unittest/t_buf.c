@@ -82,5 +82,82 @@ int main(void)
     nw_cache_free(cache, objs[199]);
     nw_cache_release(cache);
 
+    /*
+     * the free list follows the load down. bufs of 1M: an idle pool keeps
+     * 4 of them.
+     */
+    pool = nw_buf_pool_create(1024 * 1024);
+    CHECK(pool != NULL);
+    CHECK_EQ(pool->keep, 4);
+    static nw_buf *peak[300];
+    /* a steady load: nothing is given back to the allocator, the same
+     * bufs go round */
+    for (int i = 0; i < 20; ++i)
+        CHECK((peak[i] = nw_buf_alloc(pool)) != NULL);
+    CHECK_EQ(pool->used, 20);
+    for (int round = 0; round < 50; ++round) {
+        for (int i = 0; i < 10; ++i)
+            nw_buf_free(pool, peak[i]);
+        CHECK_EQ(pool->used, 10);
+        CHECK_EQ(pool->free, 10);
+        nw_buf *freed[10];
+        memcpy(freed, peak, sizeof(freed));
+        for (int i = 0; i < 10; ++i) {
+            peak[i] = nw_buf_alloc(pool);
+            bool reused = false;
+            for (int j = 0; j < 10; ++j)
+                reused = reused || peak[i] == freed[j];
+            CHECK(reused);
+        }
+        CHECK_EQ(pool->free, 0);
+    }
+    /* a peak of 300, then back down to 10 in use */
+    for (int i = 20; i < 300; ++i)
+        CHECK((peak[i] = nw_buf_alloc(pool)) != NULL);
+    CHECK_EQ(pool->used, 300);
+    uint32_t most_waiting = 0;
+    for (int i = 299; i >= 10; --i) {
+        nw_buf_free(pool, peak[i]);
+        /* never more waiting than in use, plus keep */
+        CHECK(pool->free <= pool->used + pool->keep);
+        if (pool->free > most_waiting)
+            most_waiting = pool->free;
+    }
+    CHECK_EQ(pool->used, 10);
+    CHECK_EQ(pool->free, 10 + 4);               /* not the 290 of the peak */
+    CHECK(most_waiting >= 140 && most_waiting <= 160);
+    CHECK(pool->free_total <= 128);             /* the array shrank too */
+    /* all the way down: what an idle pool keeps */
+    for (int i = 0; i < 10; ++i)
+        nw_buf_free(pool, peak[i]);
+    CHECK_EQ(pool->used, 0);
+    CHECK_EQ(pool->free, 4);
+    /* and up again */
+    for (int i = 0; i < 300; ++i)
+        CHECK((peak[i] = nw_buf_alloc(pool)) != NULL);
+    for (int i = 0; i < 300; ++i)
+        nw_buf_free(pool, peak[i]);
+    CHECK_EQ(pool->free, 4);
+    nw_buf_pool_release(pool);
+
+    /* small objects: up to 1024 are kept, a cache of connections on a
+     * quiet server never asks the allocator twice */
+    cache = nw_cache_create(376);
+    CHECK_EQ(cache->keep, 1024);
+    static void *many_objs[5000];
+    for (int i = 0; i < 5000; ++i)
+        CHECK((many_objs[i] = nw_cache_alloc(cache)) != NULL);
+    CHECK_EQ(cache->used, 5000);
+    for (int i = 0; i < 5000; ++i) {
+        nw_cache_free(cache, many_objs[i]);
+        CHECK(cache->free <= cache->used + cache->keep);
+    }
+    CHECK_EQ(cache->used, 0);
+    CHECK_EQ(cache->free, 1024);
+    nw_cache_release(cache);
+    cache = nw_cache_create(64 * 1024);
+    CHECK_EQ(cache->keep, 64);
+    nw_cache_release(cache);
+
     return 0;
 }

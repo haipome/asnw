@@ -9,6 +9,60 @@
 # define NW_BUF_POOL_INIT_SIZE 64
 # define NW_CACHE_INIT_SIZE    64
 
+/* what an idle pool or cache holds on to: about this many bytes worth of
+ * objects, but not fewer or more of them than this */
+# define NW_KEEP_BYTES         (4 * 1024 * 1024)
+# define NW_KEEP_MIN           4
+# define NW_KEEP_MAX           1024
+
+static uint32_t keep_count(uint32_t size)
+{
+    uint32_t count = NW_KEEP_BYTES / (size ? size : 1);
+    if (count < NW_KEEP_MIN)
+        return NW_KEEP_MIN;
+    if (count > NW_KEEP_MAX)
+        return NW_KEEP_MAX;
+    return count;
+}
+
+/*
+ * an object comes back to a free list (the same code serves nw_buf_pool
+ * and nw_cache). keep it for reuse unless as many are waiting already as
+ * are in use, plus keep: then free it, and one of the waiting ones too if
+ * there are more than that, so that after a peak the list comes down with
+ * the load instead of staying at the size of the peak. `used` has been
+ * decremented by the caller.
+ */
+static void free_list_put(void ***free_arr, uint32_t *free_count, uint32_t *free_total, uint32_t used, uint32_t keep, void *obj)
+{
+    if (*free_count >= used + keep) {
+        free(obj);
+        if (*free_count > used + keep)
+            free((*free_arr)[--*free_count]);
+        /* the array of pointers shrinks as well */
+        if (*free_total > NW_BUF_POOL_INIT_SIZE && *free_count < *free_total / 4) {
+            uint32_t new_total = *free_total / 2;
+            void *new_arr = realloc(*free_arr, new_total * sizeof(void *));
+            if (new_arr) {
+                *free_arr = new_arr;
+                *free_total = new_total;
+            }
+        }
+        return;
+    }
+    if (*free_count == *free_total) {
+        uint32_t new_total = *free_total * 2;
+        void *new_arr = realloc(*free_arr, new_total * sizeof(void *));
+        if (new_arr == NULL) {
+            free(obj);
+            return;
+        }
+        *free_arr = new_arr;
+        *free_total = new_total;
+    }
+    (*free_arr)[(*free_count)++] = obj;
+}
+
 size_t nw_buf_size(nw_buf *buf)
 {
     return buf->wpos - buf->rpos;
@@ -49,6 +103,7 @@ nw_buf_pool *nw_buf_pool_create(uint32_t size)
 
     pool->size = size;
     pool->used = 0;
+    pool->keep = keep_count(size);
     pool->free = 0;
     pool->free_total = NW_BUF_POOL_INIT_SIZE;
     pool->free_arr = malloc(pool->free_total * sizeof(nw_buf *));
@@ -62,18 +117,15 @@ nw_buf_pool *nw_buf_pool_create(uint32_t size)
 
 nw_buf *nw_buf_alloc(nw_buf_pool *pool)
 {
+    nw_buf *buf;
     if (pool->free) {
-        nw_buf *buf = pool->free_arr[--pool->free];
-        buf->size = pool->size;
-        buf->rpos = 0;
-        buf->wpos = 0;
-        buf->next = NULL;
-        return buf;
+        buf = pool->free_arr[--pool->free];
+    } else {
+        buf = malloc(sizeof(nw_buf) + pool->size);
+        if (buf == NULL)
+            return NULL;
     }
-
-    nw_buf *buf = malloc(sizeof(nw_buf) + pool->size);
-    if (buf == NULL)
-        return NULL;
+    pool->used++;
     buf->size = pool->size;
     buf->rpos = 0;
     buf->wpos = 0;
@@ -84,19 +136,9 @@ nw_buf *nw_buf_alloc(nw_buf_pool *pool)
 
 void nw_buf_free(nw_buf_pool *pool, nw_buf *buf)
 {
-    if (pool->free < pool->free_total) {
-        pool->free_arr[pool->free++] = buf;
-    } else {
-        uint32_t new_free_total = pool->free_total * 2;
-        void *new_arr = realloc(pool->free_arr, new_free_total * sizeof(nw_buf *));
-        if (new_arr) {
-            pool->free_total = new_free_total;
-            pool->free_arr = new_arr;
-            pool->free_arr[pool->free++] = buf;
-        } else {
-            free(buf);
-        }
-    }
+    if (pool->used > 0)
+        pool->used--;
+    free_list_put((void ***)&pool->free_arr, &pool->free, &pool->free_total, pool->used, pool->keep, buf);
 }
 
 void nw_buf_pool_release(nw_buf_pool *pool)
@@ -209,6 +251,7 @@ nw_cache *nw_cache_create(uint32_t size)
 
     cache->size = size;
     cache->used = 0;
+    cache->keep = keep_count(size);
     cache->free = 0;
     cache->free_total = NW_CACHE_INIT_SIZE;
     cache->free_arr = malloc(cache->free_total * sizeof(void *));
@@ -222,26 +265,23 @@ nw_cache *nw_cache_create(uint32_t size)
 
 void *nw_cache_alloc(nw_cache *cache)
 {
-    if (cache->free)
-        return cache->free_arr[--cache->free];
-    return malloc(cache->size);
+    void *obj;
+    if (cache->free) {
+        obj = cache->free_arr[--cache->free];
+    } else {
+        obj = malloc(cache->size);
+        if (obj == NULL)
+            return NULL;
+    }
+    cache->used++;
+    return obj;
 }
 
 void nw_cache_free(nw_cache *cache, void *obj)
 {
-    if (cache->free < cache->free_total) {
-        cache->free_arr[cache->free++] = obj;
-    } else {
-        uint32_t new_free_total = cache->free_total * 2;
-        void *new_arr = realloc(cache->free_arr, new_free_total * sizeof(void *));
-        if (new_arr) {
-            cache->free_total = new_free_total;
-            cache->free_arr = new_arr;
-            cache->free_arr[cache->free++] = obj;
-        } else {
-            free(obj);
-        }
-    }
+    if (cache->used > 0)
+        cache->used--;
+    free_list_put(&cache->free_arr, &cache->free, &cache->free_total, cache->used, cache->keep, obj);
 }
 
 void nw_cache_release(nw_cache *cache)

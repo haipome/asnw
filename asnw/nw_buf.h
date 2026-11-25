@@ -29,14 +29,23 @@ typedef struct nw_buf {
     char data[];
 } nw_buf;
 
-/* nw_buf_pool is a factory of nw_buf of one size. freed bufs are kept for
- * reuse and only given back to the system by nw_buf_pool_release, so the
- * pool keeps the memory of its busiest moment */
+/*
+ * nw_buf_pool is a factory of nw_buf of one size. freed bufs are kept for
+ * reuse, but not without end: no more are kept waiting than are in use at
+ * the moment, plus `keep`. so the pool follows the load down as well as
+ * up - after a peak the bufs of the peak are given back to the allocator
+ * as the load falls - while a steady load never reaches the allocator.
+ *
+ * keep is about 4M bytes worth of bufs, at least 4 and at most 1024 of
+ * them: what an idle pool holds on to.
+ */
 typedef struct nw_buf_pool {
     /* capacity of every buf of this pool */
     uint32_t size;
-    /* not maintained */
+    /* number of bufs handed out and not given back yet */
     uint32_t used;
+    /* number of bufs kept beyond the ones that match `used`, see above */
+    uint32_t keep;
     /* number of bufs waiting for reuse in free_arr */
     uint32_t free;
     /* capacity of free_arr, grows on demand */
@@ -62,8 +71,10 @@ typedef struct nw_buf_list {
 typedef struct nw_cache {
     /* size of every object */
     uint32_t size;
-    /* not maintained */
+    /* number of objects handed out and not given back yet */
     uint32_t used;
+    /* number of objects kept beyond the ones that match `used` */
+    uint32_t keep;
     /* number of objects waiting for reuse in free_arr */
     uint32_t free;
     /* capacity of free_arr, grows on demand */
@@ -91,7 +102,8 @@ void nw_buf_shift(nw_buf *buf);
 nw_buf_pool *nw_buf_pool_create(uint32_t size);
 /* get an empty buf, reused or newly allocated. NULL if out of memory */
 nw_buf *nw_buf_alloc(nw_buf_pool *pool);
-/* give a buf back to the pool it was allocated from */
+/* give a buf back to the pool it was allocated from. it is kept for reuse
+ * or freed, see nw_buf_pool */
 void nw_buf_free(nw_buf_pool *pool, nw_buf *buf);
 /* free the pool and the bufs waiting for reuse. bufs still in use must be
  * given back first */
