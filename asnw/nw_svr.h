@@ -9,6 +9,7 @@
 # include <stdint.h>
 
 # include "nw_buf.h"
+# include "nw_dict.h"
 # include "nw_evt.h"
 # include "nw_ses.h"
 # include "nw_sock.h"
@@ -30,9 +31,17 @@
  * a nw_ses passed to a callback is only valid until that connection is
  * closed. the memory is recycled for later connections, so a nw_ses pointer
  * kept across asynchronous work (nw_job, nw_state, a timer ...) may by then
- * belong to a different client. keep the pair (ses, ses->id) instead and
- * check `ses->id == saved_id` before using the pointer: ids are unique per
- * server and never 0, and a closed session has id 0.
+ * belong to a different client.
+ *
+ * so don't keep the pointer, keep ses->id: ids are unique per server, never
+ * 0 and never reused. when the work is done, ask for the connection again:
+ *
+ *   nw_ses *ses = nw_svr_get_clt(svr, saved_id);
+ *   if (ses == NULL)
+ *       return;        (the client is gone)
+ *   nw_ses_send(ses, ...);
+ *
+ * or use nw_svr_send(svr, saved_id, ...), which does the same.
  *
  * datagrams
  *
@@ -160,6 +169,8 @@ typedef struct nw_svr {
     nw_svr_type type;
     nw_buf_pool *buf_pool;
     nw_cache *clt_cache;
+    /* the current connections by id, see nw_svr_get_clt */
+    nw_dict *clt_dict;
     /* the current connections, linked through nw_ses next / prev. take
      * `next` before closing an entry while walking the list */
     nw_ses *clt_list_head;
@@ -199,6 +210,17 @@ void nw_svr_release(nw_svr *svr);
  * on_privdata_free are called. ses is invalid afterwards. may be called
  * from a callback, including for the session being handled */
 void nw_svr_close_clt(nw_svr *svr, nw_ses *ses);
+
+/* find a current connection by its id (ses->id). return NULL if there is no
+ * such connection: it was closed, or the id never existed. this is the safe
+ * way to get back to a connection after asynchronous work, see the session
+ * lifetime note above. the result is valid until that connection is closed,
+ * don't keep it either */
+nw_ses *nw_svr_get_clt(nw_svr *svr, uint64_t id);
+
+/* send to a connection by id: nw_svr_get_clt + nw_ses_send. return 0, or -1
+ * if the connection is gone or nw_ses_send failed (see there) */
+int nw_svr_send(nw_svr *svr, uint64_t id, const void *data, size_t size);
 
 /* add an already connected socket to the server as if it had been accepted
  * here, e.g. a fd received from another process in on_recv_fd. the server
