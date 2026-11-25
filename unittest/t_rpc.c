@@ -94,12 +94,22 @@ int main(void)
     CHECK(clt != NULL);
     CHECK_EQ(rpc_clt_start(clt), 0);
 
+    /* a connection that sends no heartbeat, next to the real client */
+    int mute = socket(AF_INET, SOCK_STREAM, 0);
+    CHECK(mute >= 0);
+    CHECK_EQ(connect(mute, NW_SOCKADDR(&addr), sizeof(addr.in)), 0);
+
     /* longer than RPC_HEARTBEAT_TIMEOUT: heartbeats must keep the link up */
     ut_run_for(RPC_HEARTBEAT_TIMEOUT + 1.5);
     CHECK_EQ(connected, 1);
     CHECK_EQ(svr_recv, 1);
     CHECK_EQ(clt_recv, 1);
     CHECK(rpc_clt_connected(clt));
+    /* the mute one was dropped after RPC_HEARTBEAT_TIMEOUT, the client that
+     * sends heartbeats is still there */
+    char c;
+    CHECK_EQ(recv(mute, &c, 1, MSG_DONTWAIT), 0);
+    close(mute);
     CHECK_EQ(svr->raw_svr->clt_count, 1);
 
     rpc_clt_release(clt);
