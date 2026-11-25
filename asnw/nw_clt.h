@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: client, keeps a connection to one address
  *     History: yang@haipo.me, 2016/03/21, create
  */
 
@@ -15,77 +15,125 @@
 # include "nw_sock.h"
 # include "nw_timer.h"
 
-/* nw_clt is a client object, will keep connection to the special addr
+/*
+ * nw_clt is a client: it keeps a connection to one address and connects
+ * again by itself whenever the connection is lost or can't be established.
  *
- * a dgram client is usable right after nw_clt_start (on_connect is not
- * called) and always sends to the configured addr. udp datagrams arriving
- * from any other address are dropped, unless the configured addr is a
- * broadcast, multicast or wildcard address.
+ * usage:
+ *   fill a nw_clt_cfg (address via nw_sock_cfg_parse) and a nw_clt_type
+ *   (callbacks, memset it to 0 first), then
+ *   nw_clt_create -> nw_clt_start -> nw_loop_run ... -> nw_clt_release
+ *   send with nw_ses_send(&clt->ses, data, size)
  *
- * do not send before a stream client is connected (check nw_clt_connected):
- * the failed write is treated as a connection error. */
+ * all callbacks run on the loop thread. see test/test_clt.c.
+ *
+ * stream and seqpacket clients
+ *
+ * nw_clt_start only begins to connect, on_connect tells how it ended. do
+ * not send before the client is connected (check nw_clt_connected): the
+ * failed write is treated as a connection error. after a failure or a
+ * disconnect the next attempt is made reconnect_timeout seconds later, and
+ * so on forever; data still waiting to be sent is dropped.
+ *
+ * dgram clients
+ *
+ * there is no connection: the client is usable right after nw_clt_start,
+ * on_connect is not called (and on_close only by nw_clt_close), and
+ * nothing tells whether the server is there. it always sends to the configured addr. udp datagrams
+ * arriving from any other address are dropped, unless the configured addr
+ * is a broadcast, multicast or wildcard address. a unix dgram client binds
+ * a socket file of its own under /tmp so that the server can reply, and
+ * removes it on close.
+ */
 
 typedef struct nw_clt_cfg {
-    /* the target server addr */
+    /* the server address */
     nw_addr_t addr;
-    /* the target server sock type */
+    /* SOCK_STREAM, SOCK_DGRAM or SOCK_SEQPACKET */
     int sock_type;
-    /* max full message size */
+    /* must not be 0
+     *
+     * max size of one message, in bytes, and the size of the bufs used for
+     * reading and for the pending send list. with buf_pool set, the buf
+     * size of that pool is what applies (this must still not be 0) */
     uint32_t max_pkg_size;
-    /* nw_svr will keep a nw_buf_list for every stream connection to save
-     * the pending send data. the buf_limit is the nw_buf_list limit */
+    /* max number of bufs in the pending send list, i.e. up to
+     * buf_limit * max_pkg_size bytes can wait to be sent; nw_ses_send fails
+     * beyond that. 0 means no limit */
     uint32_t buf_limit;
-    /* will call nw_sock_set_recv_buf if not 0 */
+    /* kernel receive buffer size of the socket (SO_RCVBUF), 0 to keep the
+     * system default */
     uint32_t read_mem;
-    /* will call nw_sock_set_send_buf if not 0 */
+    /* kernel send buffer size of the socket (SO_SNDBUF), 0 to keep the
+     * system default */
     uint32_t write_mem;
-    /* interval to reconnect when the stream connection is close, also the
-     * timeout of a connect attempt. default 1.0 */
+    /* seconds to wait before connecting again after a failure or a
+     * disconnect. also the time a connect attempt may take before it is
+     * given up. 0 means the default, 1.0 */
     double reconnect_timeout;
-    /* buf factory, if set to NULL, nw_clt will create it */
+    /* optional
+     *
+     * a buf pool to use instead of a private one, to share bufs between
+     * many clients. its buf size takes the place of max_pkg_size. it must
+     * outlive the client and is not released with it */
     nw_buf_pool *buf_pool;
 } nw_clt_cfg;
 
 typedef struct nw_clt_type {
     /* must
      *
-     * for dgram and seqpacket connection, every package is consider as a
-     * full message, but for stream connection, there is no boundary for
-     * a message, use decode_pkg to determine the full message.
+     * tell where a message ends, same contract as nw_svr_type.decode_pkg:
      *
-     * return < 0: broken data, connection will be closed,
-     * return = 0: don't contain a full message, nothing to do,
-     * return > 0: return the size of a full message. */
+     * return > 0: the size of the first full message in data,
+     * return = 0: no full message yet (stream: wait for more data;
+     *             dgram, seqpacket: the packet is dropped),
+     * return < 0: broken data (stream, seqpacket: the connection is closed
+     *             and connected again; dgram: only reported). */
     int (*decode_pkg)(nw_ses *ses, void *data, size_t max);
     /* optional
      *
-     * called once each time the connection is closed or a connect attempt
-     * fails. if on_close return > 0, nw_clt will try reconnect immediately
-     * (from the event loop), otherwise after reconnect_timeout */
+     * called once each time the connection is lost, a connect attempt
+     * fails, or nw_clt_close is called. the place to fail the requests that
+     * were waiting for a reply, or to pick another server by changing
+     * ses->peer_addr.
+     * return > 0 to connect again at once (on the next turn of the loop),
+     * anything else to wait reconnect_timeout first. the return value is
+     * ignored for nw_clt_close */
     int (*on_close)(nw_ses *ses);
     /* optional
      *
-     * called when the connect is success or fail */
+     * called when a connect attempt ends. result true: connected, the
+     * client can send. result false: failed, errno holds the reason;
+     * on_close is called next and the client tries again. an attempt that
+     * times out is reported through on_close only */
     void (*on_connect)(nw_ses *ses, bool result);
     /* must
      *
-     * called when a full message is recieved, put your business logic in here */
+     * called for every full message, put your business logic here. data is
+     * only valid during the call, copy what you need to keep */
     void (*on_recv_pkg)(nw_ses *ses, void *data, size_t size);
     /* optional
      *
-     * called when a fd is recieved, it not set, default action is close it */
+     * called when a file descriptor arrives on a seqpacket connection.
+     * the fd is yours, close it when done. if not set, it is closed */
     void (*on_recv_fd)(nw_ses *ses, int fd);
     /* optional
      *
-     * called when a error accur, msg is the detail of the error */
+     * called when something goes wrong, msg says what, for your log. on a
+     * stream or seqpacket client on_close is called next and the client
+     * connects again. msg is only valid during the call */
     void (*on_error_msg)(nw_ses *ses, const char *msg);
 } nw_clt_type;
 
+/* the fields are for reading only */
 typedef struct nw_clt {
+    /* the session, pass &clt->ses to nw_ses_send. must stay the first
+     * member: the nw_ses given to the callbacks is this one */
     nw_ses ses;
     nw_clt_type type;
     bool custom_buf_pool;
     nw_buf_pool *buf_pool;
+    /* connect timeout while connecting, reconnect delay while waiting */
     nw_timer timer;
     bool connected;
     bool on_connect_called;
@@ -96,12 +144,30 @@ typedef struct nw_clt {
     uint32_t write_mem;
 } nw_clt;
 
-/* create a client instance, the privdata will assign to nw_clt privdata */
+/* create a client. cfg and type are copied. nothing is connected yet.
+ * privdata is stored in clt->ses.privdata, i.e. it is ses->privdata in
+ * every callback. return NULL if max_pkg_size is 0, a `must` callback is
+ * missing or memory runs out */
 nw_clt *nw_clt_create(nw_clt_cfg *cfg, nw_clt_type *type, void *privdata);
+
+/* start the client: begin to connect (stream, seqpacket) or get ready to
+ * send (dgram). on a client that is already started it drops the current
+ * connection and starts over.
+ * return 0 once the client is under way: also when the first attempt
+ * failed on the spot, since it will be retried. return -1 if no socket
+ * could be created or bound; nothing is retried then */
 int nw_clt_start(nw_clt *clt);
+
+/* close the connection and stay closed: on_close is called, pending data
+ * is dropped and no reconnect is scheduled. nw_clt_start starts it again */
 int nw_clt_close(nw_clt *clt);
+
+/* close without calling on_close, and free the client. don't call it from
+ * a callback of this client */
 void nw_clt_release(nw_clt *clt);
+
+/* can the client send right now? stream, seqpacket: the connection is
+ * established. dgram: the client is started */
 bool nw_clt_connected(nw_clt *clt);
 
 # endif
-
