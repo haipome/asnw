@@ -9,8 +9,6 @@
 # define NW_BUF_POOL_INIT_SIZE 64
 # define NW_CACHE_INIT_SIZE    64
 
-/* how many bufs an idle pool holds on to */
-# define NW_KEEP_COUNT         64
 
 size_t nw_buf_size(nw_buf *buf)
 {
@@ -52,7 +50,6 @@ nw_buf_pool *nw_buf_pool_create(uint32_t size)
 
     pool->size = size;
     pool->used = 0;
-    pool->keep = NW_KEEP_COUNT;
     pool->free = 0;
     pool->free_total = NW_BUF_POOL_INIT_SIZE;
     pool->free_arr = malloc(pool->free_total * sizeof(nw_buf *));
@@ -106,7 +103,7 @@ void nw_buf_free(nw_buf_pool *pool, nw_buf *buf)
 
 static uint32_t surplus(nw_buf_pool *pool)
 {
-    uint32_t wanted = pool->used + pool->keep;
+    uint32_t wanted = pool->used + NW_BUF_POOL_KEEP;
     return pool->free > wanted ? pool->free - wanted : 0;
 }
 

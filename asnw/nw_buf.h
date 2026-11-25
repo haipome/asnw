@@ -33,24 +33,24 @@ typedef struct nw_buf {
  * nw_buf_pool is a factory of nw_buf of one size. freed bufs are kept for
  * reuse, but not without end: nw_buf_pool_trim gives back to the
  * allocator what is waiting beyond the number in use at the moment plus
- * `keep`. so the pool follows the load down as well as up - after a peak
+ * NW_BUF_POOL_KEEP. so the pool follows the load down as well as up - after a peak
  * the bufs of the peak go as the load falls - while a steady load never
  * reaches the allocator.
  *
- * keep is 64: what an idle pool holds on to.
+ * NW_BUF_POOL_KEEP is what an idle pool holds on to.
  *
  * trimming is a step of its own because a buf must not be freed in the
  * middle of a callback that may still be reading it. nw_svr and nw_clt
  * trim their pool between the turns of the event loop; a pool of your own
  * is trimmed when you call nw_buf_pool_trim.
  */
+# define NW_BUF_POOL_KEEP 64
+
 typedef struct nw_buf_pool {
     /* capacity of every buf of this pool */
     uint32_t size;
     /* number of bufs handed out and not given back yet */
     uint32_t used;
-    /* number of bufs kept beyond the ones that match `used`, see above */
-    uint32_t keep;
     /* number of bufs waiting for reuse in free_arr */
     uint32_t free;
     /* capacity of free_arr, grows on demand */
@@ -115,7 +115,7 @@ nw_buf *nw_buf_alloc(nw_buf_pool *pool);
  * used again. its memory stays valid at least until the next
  * nw_buf_pool_trim */
 void nw_buf_free(nw_buf_pool *pool, nw_buf *buf);
-/* free up to `max` of the bufs that wait beyond used + keep. return how
+/* free up to `max` of the bufs that wait beyond used + NW_BUF_POOL_KEEP. return how
  * many of those are left. not to be called while a callback of a session
  * that uses the pool is running */
 uint32_t nw_buf_pool_trim(nw_buf_pool *pool, uint32_t max);

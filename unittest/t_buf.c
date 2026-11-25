@@ -102,7 +102,6 @@ int main(void)
      */
     pool = nw_buf_pool_create(4096);
     CHECK(pool != NULL);
-    CHECK_EQ(pool->keep, 64);
     static nw_buf *peak[3000];
     /* a steady load: nothing is given back to the allocator, the same
      * bufs go round */
@@ -138,7 +137,7 @@ int main(void)
         if (i % 7 == 0)
             nw_buf_pool_trim(pool, UINT32_MAX);
         /* never much more waiting than in use, plus keep */
-        CHECK(pool->free <= pool->used + pool->keep + 14);
+        CHECK(pool->free <= pool->used + NW_BUF_POOL_KEEP + 14);
         if (pool->free > most_waiting)
             most_waiting = pool->free;
     }

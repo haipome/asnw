@@ -38,7 +38,6 @@ int main(void)
     nw_svr *svr = ut_svr("tcp@127.0.0.1:0", &type, 64 * 1024, NULL);
     nw_addr_t addr;
     CHECK_EQ(nw_sock_host_addr(svr->svr_list[0].sockfd, &addr), 0);
-    CHECK_EQ(svr->buf_pool->keep, 64);
 
     for (int round = 0; round < 3; ++round) {
         /* every connection sends half a message: the server holds a 64K
@@ -74,7 +73,7 @@ int main(void)
         CHECK_EQ(svr->buf_pool->used, 0);
         CHECK_EQ(svr->clt_cache->used, 0);
         fprintf(stderr, "after a peak of %d: %u bufs kept (%u K)\n", PEAK, svr->buf_pool->free, svr->buf_pool->free * 64);
-        CHECK_EQ(svr->buf_pool->free, svr->buf_pool->keep);
+        CHECK_EQ(svr->buf_pool->free, NW_BUF_POOL_KEEP);
         /* the session structs are another matter: their memory is never
          * freed while the server lives, the library reads closed sessions */
         CHECK_EQ(svr->clt_cache->free, PEAK);
