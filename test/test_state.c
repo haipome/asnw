@@ -66,7 +66,7 @@ int main(int argc, char *argv[])
     }
 
     printf("state count: %zu\n", nw_state_count(state));
-    printf("state table_size: %u\n", state->table_size);
+    printf("state table_size: %u\n", state->dict->size);
 
     nw_state_iterator *iter = nw_state_get_iterator(state);
     if (iter == NULL) {
