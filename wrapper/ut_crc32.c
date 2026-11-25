@@ -6,9 +6,9 @@
 # include "ut_crc32.h"
 
 /* standard CRC-32 (IEEE 802.3, zlib), byte at a time, see ut_crc32.h */
-# define CRC32C(c, d) (c = (c >> 8) ^ crc_c[(c ^ (d)) & 0xFF])
+# define CRC32_UPDATE(c, d) (c = (c >> 8) ^ crc_table[(c ^ (d)) & 0xFF])
 
-static const unsigned int crc_c[256] = {
+static const unsigned int crc_table[256] = {
     0x00000000, 0x77073096, 0xee0e612c, 0x990951ba,
     0x076dc419, 0x706af48f, 0xe963a535, 0x9e6495a3,
     0x0edb8832, 0x79dcb8a4, 0xe0d5e91e, 0x97d2d988,
@@ -75,11 +75,11 @@ static const unsigned int crc_c[256] = {
     0xb40bbe37, 0xc30c8ea1, 0x5a05df1b, 0x2d02ef8d,
 };
 
-uint32_t generate_crc32c(const char *buffer, size_t length)
+uint32_t generate_crc32(const char *buffer, size_t length)
 {
     uint32_t crc32 = ~0L;
     for (size_t i = 0; i < length; i++) {
-        CRC32C(crc32, (unsigned char)buffer[i]);
+        CRC32_UPDATE(crc32, (unsigned char)buffer[i]);
     }
     return ~crc32;
 }

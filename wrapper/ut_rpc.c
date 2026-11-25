@@ -37,7 +37,7 @@ int rpc_decode(nw_ses *ses, void *data, size_t max)
 
     uint32_t crc32 = le32toh(pkg->crc32);
     pkg->crc32 = 0;
-    if (crc32 != generate_crc32c(data, pkg_size))
+    if (crc32 != generate_crc32(data, pkg_size))
         return -3;
     pkg->crc32 = crc32;
 
@@ -84,7 +84,7 @@ int rpc_send(nw_ses *ses, rpc_pkg *pkg)
     pkg->ext_size  = htole16(pkg->ext_size);
 
     pkg->crc32 = 0;
-    pkg->crc32 = htole32(generate_crc32c(send_buf, pkg_size));
+    pkg->crc32 = htole32(generate_crc32(send_buf, pkg_size));
 
     return nw_ses_send(ses, send_buf, pkg_size);
 }

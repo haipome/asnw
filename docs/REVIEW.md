@@ -110,5 +110,5 @@ tcp / udp / unix stream / unix dgram / seqpacket 五种传输的回显、fd 传�
 
 21 个用例在 debug、release、ASan+UBSan、TSan、valgrind 五种构建下全部通过。
 
-补充（整理头文件注释时发现并修复）：`rpc_clt` 的 `curr_index` 未初始化，首次连接就失败时会用随机下标读 `addr_arr`；回归测试 t_rpc_failover。
+补充（整理头文件注释时发现并修复）：`generate_crc32c` 实际计算的是标准 CRC-32 而非 CRC-32C，已改名为 `generate_crc32`（算法与线上格式不变）；`rpc_clt` 的 `curr_index` 未初始化，首次连接就失败时会用随机下标读 `addr_arr`；回归测试 t_rpc_failover。
 **IPv6 只验证了地址解析**：验证环境没有 IPv6 回环地址，`t_echo` 里的 IPv6 回显用例被自动跳过，需要在有 IPv6 的机器上跑一次 `make check`。

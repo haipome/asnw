@@ -28,7 +28,7 @@ static void clt_on_connect(nw_ses *ses, bool result)
 int main(void)
 {
     /* the checksum is the standard CRC-32 (check value of "123456789") */
-    CHECK_EQ(generate_crc32c("123456789", 9), 0xCBF43926u);
+    CHECK_EQ(generate_crc32("123456789", 9), 0xCBF43926u);
 
     nw_svr_bind bind;
     CHECK_EQ(nw_sock_cfg_parse("tcp@127.0.0.1:0", &bind.addr, &bind.sock_type), 0);

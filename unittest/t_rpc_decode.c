@@ -20,7 +20,7 @@ int main(void)
     pkg->body_size = 0xFFFFFFF0u;       /* head(36) + 0 + this wraps to 20 */
     pkg->crc32 = 0;
     uint32_t wrapped = (uint32_t)(RPC_PKG_HEAD_SIZE + pkg->body_size);
-    pkg->crc32 = generate_crc32c(buf, wrapped);
+    pkg->crc32 = generate_crc32(buf, wrapped);
 
     int ret = rpc_decode(NULL, buf, RPC_PKG_HEAD_SIZE);
     fprintf(stderr, "rpc_decode(body_size=%u) = %d\n", pkg->body_size, ret);
@@ -44,7 +44,7 @@ int main(void)
     pkg->ext_size = 2;
     pkg->body_size = 5;
     memcpy(buf + RPC_PKG_HEAD_SIZE, "exhello", 7);
-    pkg->crc32 = generate_crc32c(buf, RPC_PKG_HEAD_SIZE + 7);
+    pkg->crc32 = generate_crc32(buf, RPC_PKG_HEAD_SIZE + 7);
     CHECK_EQ(rpc_decode(NULL, buf, sizeof(buf)), RPC_PKG_HEAD_SIZE + 7);
     buf[RPC_PKG_HEAD_SIZE + 3] ^= 1;
     CHECK_EQ(rpc_decode(NULL, buf, sizeof(buf)), -3);

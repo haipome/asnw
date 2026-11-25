@@ -9,9 +9,9 @@
 # include <stddef.h>
 # include <stdint.h>
 
-/* checksum of length bytes. despite the name this is the standard CRC-32
- * (IEEE 802.3, the one of zlib and zip), not CRC-32C (Castagnoli): a peer
- * written in another language can use its ordinary crc32 function */
-uint32_t generate_crc32c(const char *buffer, size_t length);
+/* checksum of length bytes: the standard CRC-32 (IEEE 802.3, the one of
+ * zlib and zip), so a peer written in another language can use its
+ * ordinary crc32 function. not CRC-32C (Castagnoli) */
+uint32_t generate_crc32(const char *buffer, size_t length);
 
 # endif
