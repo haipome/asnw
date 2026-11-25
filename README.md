@@ -140,7 +140,7 @@ make check-valgrind   # under valgrind
 make lint             # gcc -Wextra and cppcheck
 ```
 
-The tests live in `unittest/`, one executable per test. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the conventions and [docs/REVIEW.md](docs/REVIEW.md) for the code review notes (in Chinese).
+The tests live in `unittest/`, one executable per test. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the conventions (in Chinese).
 
 ## License
 
