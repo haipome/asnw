@@ -32,6 +32,7 @@
 | 用例 | 覆盖 |
 |------|------|
 | t_buf | nw_buf / pool / list / cache |
+| t_dict | 增删改查、扩容、不同分布的 key、遍历中删除 |
 | t_sock、t_ipv6 | 地址解析（IPv4、IPv6、unix、非法输入）与 socket 选项 |
 | t_timer | 单次、重复、停止 |
 | t_state | 增删改查、超时、扩容、迭代、超时回调中用同一 id 重新添加 |
@@ -39,6 +40,7 @@
 | t_echo | tcp、tcp/ipv6、udp、unix stream/dgram/seqpacket 回显，随后 release；stream 约 2MB |
 | t_seqpacket_fd、t_seqpacket_queue | fd 传递；写队列积压时不丢包 |
 | t_clt_reconnect、t_clt_connect_fail、t_clt_release | 重试与重连；同步失败只处理一次、立即重连不递归；各时点 release |
+| t_svr_get_clt | 按 id 找回连接；连接关闭、内存被新连接复用后旧 id 查不到 |
 | t_svr_release | 空闲、带活动连接、多地址 server 的 release；bind 不删除普通文件 |
 | t_accept_emfile | fd 耗尽时拒绝连接而不空转，恢复后正常 |
 | t_sigpipe | 对端已关闭时发送不触发 SIGPIPE |
