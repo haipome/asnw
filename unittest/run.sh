@@ -41,6 +41,9 @@ for bin in "$dir"/t_* "$dir"/kb_*; do
         pass=$((pass + 1)); printf 'PASS   %s\n' "$name"
     else
         fail=$((fail + 1)); printf 'FAIL   %-32s (rc=%d, see %s)\n' "$name" $rc "$log/$name.log"
+        # what the test itself said, then the end of the log (valgrind
+        # and the sanitizers can bury the first under the second)
+        grep -v '^==' "$log/$name.log" | grep -E 'CHECK|unexpected|expected' | head -n 5 | sed 's/^/       | /'
         tail -n 15 "$log/$name.log" | sed 's/^/       | /'
     fi
 done

@@ -22,7 +22,7 @@ static uint64_t ids[256];
 static int id_count;
 static int per_thread[THREADS], unix_conns, closes, wrong_thread;
 static int privdata_allocs, privdata_frees, thread_starts, thread_stops, timeouts;
-static int sleeping;
+static int sleeping, wake_up;
 static int bye_on_close;
 static int fail_start_at = -1;
 
@@ -113,8 +113,10 @@ static void svr_on_recv_pkg(nw_ses *ses, void *data, size_t size)
         CHECK_EQ(nw_hub_close(hub, id), 0);
         CHECK_EQ(nw_hub_send(hub, id, "x\n", 2), -1);
     } else if (strcmp(text, "sleep") == 0) {
+        /* stuck until the main thread says so */
         ADD(sleeping);
-        usleep(300 * 1000);
+        while (GET(wake_up) == 0)
+            usleep(1000);
     }
 }
 
@@ -213,6 +215,24 @@ static nw_hub *create(uint32_t threads, nw_svr_bind *binds, uint32_t bind_count,
     return nw_hub_create(&cfg, &type, &hub);
 }
 
+static bool all_have(int offset, int expect)
+{
+    for (int i = 0; i < CLIENTS; ++i) {
+        struct client *c = &clients[i];
+        if (!c->closed && *(int *)((char *)c + offset) != expect)
+            return false;
+    }
+    return true;
+}
+
+/* run the loop until cond holds, 20 seconds at most: the machine may be
+ * slow (valgrind, tsan, a busy ci runner). the checks come afterwards */
+# define WAIT(cond) do { \
+    for (int _i = 0; _i < 1000 && !(cond); ++_i) \
+        ut_run_for(0.02); \
+} while (0)
+# define ALL(field, expect) all_have(offsetof(struct client, field), expect)
+
 static void each_client(const char *what, int offset, int expect)
 {
     for (int i = 0; i < CLIENTS; ++i) {
@@ -273,7 +293,7 @@ int main(void)
         clients[i].clt = ut_clt(i % 2 ? unix_cfg : tcp_cfg, &ct, 4096, 10, &clients[i]);
         CHECK_EQ(nw_clt_start(clients[i].clt), 0);
     }
-    ut_run_for(0.3);
+    WAIT(ALL(echo, 1));
 
     /* dealt out in turn, each bind keeps its address, ids tell the worker */
     EACH(echo, 1);
@@ -291,7 +311,8 @@ int main(void)
     for (int i = 0; i < CLIENTS; ++i)
         CHECK_EQ(nw_hub_send(hub, clients[i].id, "direct\n", 7), 0);
     CHECK_EQ(nw_hub_broadcast(hub, "news\n", 5), 0);
-    ut_run_for(0.2);
+    WAIT(ALL(direct, 1) && ALL(news, 1));
+    ut_run_for(0.05);
     EACH(direct, 1);
     EACH(news, 1);
 
@@ -301,7 +322,8 @@ int main(void)
             CHECK_EQ(nw_ses_send(&clients[i].clt->ses, "relay\n", 6), 0);
     }
     CHECK_EQ(nw_ses_send(&clients[1].clt->ses, "bcast\n", 6), 0);
-    ut_run_for(1.0);
+    WAIT(ALL(relay, RELAYS * CLIENTS) && ALL(wbcast, 1));
+    ut_run_for(0.05);
     EACH(relay, RELAYS * CLIENTS);
     EACH(wbcast, 1);
 
@@ -316,7 +338,7 @@ int main(void)
     CHECK_EQ(nw_hub_send(hub, clients[3].id, "last\n", 5), 0);
     CHECK_EQ(nw_hub_shutdown(hub, clients[3].id), 0);
     CHECK_EQ(nw_hub_close(hub, clients[4].id), 0);
-    ut_run_for(0.3);
+    WAIT(clients[3].closed && clients[4].closed && GET(closes) == 2);
     CHECK_EQ(clients[3].closed, 1);
     CHECK(clients[3].last_before_close);
     CHECK_EQ(clients[4].closed, 1);
@@ -325,7 +347,7 @@ int main(void)
     /* the same asked for by the connection's own worker */
     CHECK_EQ(nw_ses_send(&clients[6].clt->ses, "shutme\n", 7), 0);
     CHECK_EQ(nw_ses_send(&clients[7].clt->ses, "closeme\n", 8), 0);
-    ut_run_for(0.3);
+    WAIT(clients[6].closed && clients[7].closed && GET(closes) == 4);
     CHECK_EQ(clients[6].closed, 1);
     CHECK(clients[6].last_before_close);
     CHECK_EQ(clients[7].closed, 1);
@@ -334,8 +356,7 @@ int main(void)
     /* a worker that is stuck: what waits for it is limited */
     struct client *slow = &clients[2];
     CHECK_EQ(nw_ses_send(&slow->clt->ses, "sleep\n", 6), 0);
-    for (int i = 0; i < 200 && GET(sleeping) == 0; ++i)
-        ut_run_for(0.01);
+    WAIT(GET(sleeping) == 1);
     CHECK_EQ(GET(sleeping), 1);
     char big[BIG];
     memset(big, 'b', sizeof(big));
@@ -345,12 +366,14 @@ int main(void)
         queued++;
     CHECK_EQ(queued, 64);
     CHECK_EQ(nw_hub_broadcast(hub, "news\n", 5), -1);       /* the others get it */
-    ut_run_for(0.8);
+    ADD(wake_up);
+    WAIT(slow->big == 64 && clients[5].news == 2);
+    ut_run_for(0.05);
     CHECK_EQ(slow->big, 64);
     CHECK_EQ(slow->news, 1);
     CHECK_EQ(clients[5].news, 2);
     CHECK_EQ(nw_hub_send(hub, slow->id, big, BIG), 0);      /* room again */
-    ut_run_for(0.1);
+    WAIT(slow->big == 65);
     CHECK_EQ(slow->big, 65);
 
     /* release closes what is left, each on its worker */
@@ -361,7 +384,7 @@ int main(void)
     CHECK_EQ(GET(privdata_allocs), CLIENTS);
     CHECK_EQ(GET(privdata_frees), CLIENTS);
     CHECK_EQ(GET(thread_stops), THREADS);
-    ut_run_for(0.1);
+    WAIT(ALL(closed, 1));
     for (int i = 0; i < CLIENTS; ++i) {
         CHECK_EQ(clients[i].closed, 1);
         nw_clt_release(clients[i].clt);
@@ -379,7 +402,7 @@ int main(void)
         fds[i] = socket(AF_INET, SOCK_STREAM, 0);
         CHECK_EQ(connect(fds[i], NW_SOCKADDR(&addr), sizeof(addr.in)), 0);
     }
-    ut_run_for(1.0);
+    WAIT(GET(timeouts) == 4 && GET(closes) == 4);
     CHECK_EQ(GET(timeouts), 4);
     CHECK_EQ(GET(closes), 4);
     /* stopped: nothing new is accepted, releasing still works */
