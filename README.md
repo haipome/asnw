@@ -290,7 +290,7 @@ make coverage         # line coverage per source file
 make lint             # gcc -Wextra and cppcheck
 ```
 
-The tests live in `unittest/`, one executable per test. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the conventions (in Chinese).
+The tests live in `unittest/`, one executable per test.
 
 ## License
 
