@@ -10,6 +10,77 @@
 
 # include "nw_svr.h"
 
+/* how long a connection that is shutting down is given to hang up */
+# define NW_SVR_LINGER_TIME     2.0
+/* the timeout timer normally runs once a second, faster if a timeout is
+ * shorter than that asks for, but not faster than this */
+# define NW_SVR_TIMER_INTERVAL  1.0
+# define NW_SVR_TIMER_MIN       0.05
+
+static void on_error(nw_ses *ses, const char *msg);
+
+/* walk the connections: close the ones done shutting down, report the
+ * ones whose idle timeout or deadline has passed */
+static void on_timer(nw_timer *timer, void *privdata)
+{
+    nw_svr *svr = privdata;
+    double now = ev_now(nw_default_loop);
+
+    nw_svr_iterator iter;
+    nw_ses *ses;
+    nw_svr_iter_init(&iter, svr);
+    while ((ses = nw_svr_next(&iter)) != NULL) {
+        if (ses->closing) {
+            if (now >= ses->close_deadline)
+                nw_svr_close_clt(svr, ses);
+            continue;
+        }
+        bool expired = false;
+        if (ses->deadline > 0 && now >= ses->deadline) {
+            ses->deadline = 0;
+            expired = true;
+        }
+        if (ses->idle_timeout > 0) {
+            /* silent since the last data, or since the timeout last fired */
+            double since = ses->active_time > ses->idle_mark ? ses->active_time : ses->idle_mark;
+            if (now - since >= ses->idle_timeout) {
+                ses->idle_mark = now;
+                expired = true;
+            }
+        }
+        if (!expired)
+            continue;
+        if (svr->type.on_timeout) {
+            svr->type.on_timeout(ses);
+        } else {
+            on_error(ses, "timeout");
+        }
+    }
+
+    /* nobody left to watch: the next connection that needs it starts it again */
+    if (svr->clt_count == 0)
+        nw_timer_stop(&svr->timer);
+}
+
+/* make sure the timer runs, and often enough for a timeout of `period`
+ * seconds to be noticed in time */
+static void need_timer(nw_svr *svr, double period)
+{
+    double interval = NW_SVR_TIMER_INTERVAL;
+    if (period < 2 * interval)
+        interval = period / 2;
+    if (interval < NW_SVR_TIMER_MIN)
+        interval = NW_SVR_TIMER_MIN;
+    if (nw_timer_active(&svr->timer) && svr->timer_interval <= interval)
+        return;
+    if (svr->timer_interval > 0 && svr->timer_interval < interval)
+        interval = svr->timer_interval;
+    nw_timer_stop(&svr->timer);
+    nw_timer_set(&svr->timer, interval, true, on_timer, svr);
+    nw_timer_start(&svr->timer);
+    svr->timer_interval = interval;
+}
+
 static int create_socket(int family, int sock_type)
 {
     int sockfd = socket(family, sock_type, 0);
@@ -151,6 +222,10 @@ static int nw_svr_add_clt(nw_ses *ses, int sockfd, nw_addr_t *peer_addr)
     clt->on_close    = on_close;
 
     svr->clt_count++;
+    clt->active_time = ev_now(nw_default_loop);
+    clt->idle_timeout = svr->idle_timeout;
+    if (clt->idle_timeout > 0)
+        need_timer(svr, clt->idle_timeout);
     nw_ses_start(clt);
 
     if (svr->type.on_new_connection) {
@@ -228,6 +303,7 @@ nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
         nw_svr_free(svr);
         return NULL;
     }
+    svr->idle_timeout = cfg->idle_timeout > 0 ? cfg->idle_timeout : 0;
     svr->buf_limit = cfg->buf_limit;
     svr->read_mem = cfg->read_mem;
     svr->write_mem = cfg->write_mem;
@@ -302,6 +378,7 @@ int nw_svr_stop(nw_svr *svr)
 void nw_svr_release(nw_svr *svr)
 {
     nw_svr_stop(svr);
+    nw_timer_stop(&svr->timer);
     nw_svr_iterator iter;
     nw_ses *curr;
     nw_svr_iter_init(&iter, svr);
@@ -352,4 +429,40 @@ nw_ses *nw_svr_next(nw_svr_iterator *iter)
 {
     nw_dict_entry *entry = nw_dict_next(&iter->iter);
     return entry ? entry->val : NULL;
+}
+
+static bool is_clt(nw_ses *ses)
+{
+    return ses->ses_type == NW_SES_TYPE_COMMON && ses->id != 0;
+}
+
+void nw_svr_shutdown_clt(nw_svr *svr, nw_ses *ses)
+{
+    if (!is_clt(ses) || ses->closing)
+        return;
+    ses->close_deadline = ev_now(nw_default_loop) + NW_SVR_LINGER_TIME;
+    nw_ses_shutdown(ses);
+    need_timer(svr, NW_SVR_LINGER_TIME);
+}
+
+void nw_svr_set_clt_idle_timeout(nw_svr *svr, nw_ses *ses, double timeout)
+{
+    if (!is_clt(ses))
+        return;
+    ses->idle_timeout = timeout > 0 ? timeout : 0;
+    ses->idle_mark = ev_now(nw_default_loop);
+    if (ses->idle_timeout > 0)
+        need_timer(svr, ses->idle_timeout);
+}
+
+void nw_svr_set_clt_deadline(nw_svr *svr, nw_ses *ses, double timeout)
+{
+    if (!is_clt(ses))
+        return;
+    if (timeout <= 0) {
+        ses->deadline = 0;
+        return;
+    }
+    ses->deadline = ev_now(nw_default_loop) + timeout;
+    need_timer(svr, timeout);
 }

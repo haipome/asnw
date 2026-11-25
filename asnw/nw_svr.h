@@ -13,6 +13,7 @@
 # include "nw_evt.h"
 # include "nw_ses.h"
 # include "nw_sock.h"
+# include "nw_timer.h"
 
 /*
  * nw_svr is a server: it listens on one or more addresses, which may be of
@@ -42,6 +43,20 @@
  *   nw_ses_send(ses, ...);
  *
  * or use nw_svr_send(svr, saved_id, ...), which does the same.
+ *
+ * timeouts and closing
+ *
+ * idle_timeout in the cfg closes connections that stay silent. a
+ * connection can also be given a timeout of its own or a deadline
+ * (nw_svr_set_clt_idle_timeout, nw_svr_set_clt_deadline), and on_timeout
+ * lets you decide what a timeout means. all of it is checked by one timer
+ * that walks the connections about once a second, so timeouts are
+ * accurate to about a second, and nothing runs when no connection uses
+ * them.
+ *
+ * nw_svr_close_clt closes a connection at once, dropping what was not
+ * sent yet. to say something last and be sure it arrives, send it and
+ * call nw_svr_shutdown_clt.
  *
  * datagrams
  *
@@ -83,6 +98,12 @@ typedef struct nw_svr_cfg {
     /* kernel send buffer size of each socket (SO_SNDBUF), 0 to keep the
      * system default */
     uint32_t write_mem;
+    /* optional
+     *
+     * seconds a connection may stay silent, i.e. send nothing at all,
+     * before it times out: on_timeout is called if set, otherwise the
+     * connection is closed. 0 for no timeout */
+    double idle_timeout;
 } nw_svr_cfg;
 
 typedef struct nw_svr_type {
@@ -148,6 +169,21 @@ typedef struct nw_svr_type {
      * a listening or dgram session (accept or sendto error) the server
      * keeps running. msg is only valid during the call */
     void (*on_error_msg)(nw_ses *ses, const char *msg);
+    /* optional
+     *
+     * called when a connection has been silent for its idle timeout, or
+     * when its deadline has passed. without this callback the connection
+     * is closed (on_error_msg and on_connection_close are called).
+     *
+     * with it, nothing else happens: close the connection here
+     * (nw_svr_close_clt, or nw_svr_shutdown_clt after a last message), or
+     * leave it open. left open and still silent, it times out again one
+     * idle timeout later; ev_now(nw_default_loop) - ses->active_time
+     * tells for how long it has been silent in total. that makes
+     * "ping after 20 seconds, give up after 60" a few lines.
+     *
+     * the callback may close this connection but no other one */
+    void (*on_timeout)(nw_ses *ses);
     /* optional, if set on_privdata_free must be set too
      *
      * called for every new connection, before on_new_connection. the
@@ -181,6 +217,10 @@ typedef struct nw_svr {
     uint32_t buf_limit;
     uint32_t read_mem;
     uint32_t write_mem;
+    double idle_timeout;
+    /* checks timeouts and finishes shutdowns, runs only while needed */
+    nw_timer timer;
+    double timer_interval;
     uint64_t id_start;
     /* the privdata given to nw_svr_create. reach it from a callback with
      * ((nw_svr *)ses->svr)->privdata */
@@ -211,6 +251,37 @@ void nw_svr_release(nw_svr *svr);
  * on_privdata_free are called. ses is invalid afterwards. may be called
  * from a callback, including for the session being handled */
 void nw_svr_close_clt(nw_svr *svr, nw_ses *ses);
+
+/*
+ * close a connection in an orderly way, for when the last thing you sent
+ * has to arrive: an error response, a goodbye message.
+ *
+ * from this call on nothing more can be sent on the connection
+ * (nw_ses_send returns -1) and what it still receives is thrown away, its
+ * callbacks are no longer called. what was already queued is written
+ * out, then the peer is told that nothing more will come. the connection
+ * is closed for good when the peer hangs up in turn, or after 2 seconds;
+ * on_connection_close is called then, as for any close.
+ *
+ * why not just nw_svr_close_clt: closing a socket that still has unread
+ * input makes the kernel reset the connection, and a reset can destroy
+ * data the peer has not read yet - typically the very message that
+ * explains why it is being disconnected.
+ */
+void nw_svr_shutdown_clt(nw_svr *svr, nw_ses *ses);
+
+/* give one connection an idle timeout of its own, in place of the one of
+ * the cfg. 0 turns it off for that connection, e.g. while it is waiting
+ * for an answer that may take long. the silence is counted from the last
+ * data received, or from this call if that is later */
+void nw_svr_set_clt_idle_timeout(nw_svr *svr, nw_ses *ses, double timeout);
+
+/* make a connection time out `timeout` seconds from now whatever it does
+ * in the meantime, unlike the idle timeout, which every byte received
+ * pushes back. for things that have to be finished in a given time: a
+ * handshake, a request that arrives in small pieces. it fires once.
+ * 0 cancels it */
+void nw_svr_set_clt_deadline(nw_svr *svr, nw_ses *ses, double timeout);
 
 /* find a current connection by its id (ses->id). return NULL if there is no
  * such connection: it was closed, or the id never existed. this is the safe

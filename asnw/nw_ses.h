@@ -66,6 +66,21 @@ typedef struct nw_ses {
     /* the nw_svr this session belongs to, NULL for a nw_clt session */
     void *svr;
 
+    /* when data last arrived on this session, a time of the event loop
+     * (ev_now). `ev_now(nw_default_loop) - ses->active_time` is how long
+     * the peer has been silent */
+    double active_time;
+    /* timeouts of a nw_svr connection, managed by nw_svr: see
+     * nw_svr_set_clt_idle_timeout and nw_svr_set_clt_deadline */
+    double idle_timeout;
+    double idle_mark;
+    double deadline;
+    /* set by nw_svr_shutdown_clt: the session is on its way out. nothing
+     * more can be sent on it and what it still receives is thrown away */
+    bool closing;
+    bool write_shut;
+    double close_deadline;
+
     /* event handlers, installed by nw_svr / nw_clt */
     int  (*on_accept)(struct nw_ses *ses, int sockfd, nw_addr_t *peer_addr);
     int  (*decode_pkg)(struct nw_ses *ses, void *data, size_t max);
@@ -90,10 +105,11 @@ typedef struct nw_ses {
  * dgram: sent to ses->peer_addr at once, never queued.
  *
  * return 0 if the data was sent or queued (it does not tell which).
- * return -1 on failure: the session is closed, the pending send list is
- * full (buf_limit), or the socket reported an error. except for a closed
- * session the error handler has run by then (on_error_msg), and for a
- * connection that means it is closed already: don't use ses after a -1.
+ * return -1 on failure: the session is closed or shutting down
+ * (nw_svr_shutdown_clt), the pending send list is full (buf_limit), or the
+ * socket reported an error. in the last two cases the error handler has
+ * run by then (on_error_msg), and for a connection that means it is closed
+ * already: don't use ses after a -1.
  */
 int nw_ses_send(nw_ses *ses, const void *data, size_t size);
 
@@ -123,6 +139,11 @@ int nw_ses_connect(nw_ses *ses, nw_addr_t *addr);
 int nw_ses_start(nw_ses *ses);
 /* stop handling events, the socket stays open */
 int nw_ses_stop(nw_ses *ses);
+/* begin an orderly close: no more sends, input is discarded from now on,
+ * and the sending side of the socket is shut down as soon as everything
+ * queued has been written. the socket itself stays open, the owner closes
+ * it when the peer hangs up or after a wait of its choice */
+void nw_ses_shutdown(nw_ses *ses);
 /* close the socket and drop buffered data. the session can be used again */
 int nw_ses_close(nw_ses *ses);
 /* close, and free what nw_ses_init allocated */
