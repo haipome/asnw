@@ -81,6 +81,8 @@ static void nw_svr_free(nw_svr *svr)
         }
         free(svr->svr_list);
     }
+    if (svr->clt_dict)
+        nw_dict_release(svr->clt_dict);
     /* sessions hand their bufs back to the pool, so the pool goes last */
     if (svr->clt_cache)
         nw_cache_release(svr->clt_cache);
@@ -130,6 +132,17 @@ static int nw_svr_add_clt(nw_ses *ses, int sockfd, nw_addr_t *peer_addr)
     clt->id = svr->id_start++;
     if (clt->id == 0)
         clt->id = svr->id_start++;
+    if (nw_dict_add(svr->clt_dict, clt->id, clt) < 0) {
+        /* nothing else knows this session yet, undo it. sockfd is closed
+         * by the caller, as for every failure of this function */
+        clt->sockfd = -1;
+        nw_ses_release(clt);
+        nw_cache_free(svr->clt_cache, clt);
+        if (privdata) {
+            svr->type.on_privdata_free(svr, privdata);
+        }
+        return -1;
+    }
 
     clt->decode_pkg  = svr->type.decode_pkg;
     clt->on_recv_pkg = svr->type.on_recv_pkg;
@@ -221,6 +234,11 @@ nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
         nw_svr_free(svr);
         return NULL;
     }
+    svr->clt_dict = nw_dict_create(0);
+    if (svr->clt_dict == NULL) {
+        nw_svr_free(svr);
+        return NULL;
+    }
     svr->buf_limit = cfg->buf_limit;
     svr->read_mem = cfg->read_mem;
     svr->write_mem = cfg->write_mem;
@@ -301,6 +319,7 @@ void nw_svr_release(nw_svr *svr)
         if (svr->type.on_connection_close) {
             svr->type.on_connection_close(curr);
         }
+        nw_dict_del(svr->clt_dict, curr->id);
         if (curr->privdata) {
             svr->type.on_privdata_free(svr, curr->privdata);
         }
@@ -324,6 +343,7 @@ void nw_svr_close_clt(nw_svr *svr, nw_ses *ses)
     if (svr->type.on_connection_close) {
         svr->type.on_connection_close(ses);
     }
+    nw_dict_del(svr->clt_dict, ses->id);
     if (ses->prev) {
         ses->prev->next = ses->next;
     } else {
@@ -340,4 +360,17 @@ void nw_svr_close_clt(nw_svr *svr, nw_ses *ses)
     nw_ses_release(ses);
     nw_cache_free(svr->clt_cache, ses);
     svr->clt_count--;
+}
+
+nw_ses *nw_svr_get_clt(nw_svr *svr, uint64_t id)
+{
+    return nw_dict_get(svr->clt_dict, id);
+}
+
+int nw_svr_send(nw_svr *svr, uint64_t id, const void *data, size_t size)
+{
+    nw_ses *ses = nw_svr_get_clt(svr, id);
+    if (ses == NULL)
+        return -1;
+    return nw_ses_send(ses, data, size);
 }

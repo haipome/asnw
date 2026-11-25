@@ -15,6 +15,7 @@ About 3,000 lines, no dependency other than libev, single threaded by design.
 | `nw_timer` | Call a function after an interval, once or repeatedly. |
 | `nw_state` | Table of pending states that expire, for request tracking with timeouts. |
 | `nw_job` | Thread pool. Work runs on worker threads, results come back on the loop thread. |
+| `nw_dict` | Hash table from integer keys to pointers. Used by `nw_svr` and `nw_state`, usable on its own. |
 | `nw_buf` | Buffer pool, buffer list and a fixed size object cache. |
 | `nw_sock` | Address parsing and socket option helpers. |
 | `nw_evt` | The event loop (`nw_loop_run`, `nw_loop_break`). |
@@ -104,7 +105,7 @@ The protocol name is case insensitive. Hosts are numeric addresses; there is no 
 
 **Messages.** On stream connections `decode_pkg` finds message boundaries, and a message can be at most `max_pkg_size` bytes. On datagram and seqpacket sockets every packet is one message; a packet for which `decode_pkg` returns 0 is dropped.
 
-**Session lifetime.** A `nw_ses *` is valid until its connection closes, and the memory is reused for later connections. If you keep one across asynchronous work (a job, a state, a timer), save `ses->id` with it and check that it still matches before using the pointer. Ids are never 0, and a closed session has id 0.
+**Session lifetime.** A `nw_ses *` is valid until its connection closes, and the memory is reused for later connections. Across asynchronous work (a job, a state, a timer) keep `ses->id` instead of the pointer, and get the connection back with `nw_svr_get_clt(svr, id)`, which returns NULL if the client is gone; `nw_svr_send(svr, id, ...)` does both steps. Ids are never 0 and never reused.
 
 **Send buffering.** `nw_ses_send` writes directly when it can and queues the rest. `buf_limit` caps that queue in units of `max_pkg_size` buffers; the default 0 means unlimited, so set a limit on servers that face untrusted clients. Datagram sends are never queued: a full socket buffer is reported as an error.
 

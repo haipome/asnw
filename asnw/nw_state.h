@@ -11,6 +11,7 @@
 
 # include "nw_evt.h"
 # include "nw_buf.h"
+# include "nw_dict.h"
 
 /*
  * nw_state keeps track of things you are waiting for, each with a timeout.
@@ -22,7 +23,7 @@
  * if no reply comes in time, on_timeout is called instead.
  *
  * every entry carries data_size bytes of your data and is found by its id
- * through a hash table. not thread safe, use it from the loop thread.
+ * through a nw_dict. not thread safe, use it from the loop thread.
  * see test/test_state.c.
  */
 
@@ -36,7 +37,6 @@ typedef struct nw_state_entry {
     /* your data: data_size bytes, zeroed by nw_state_add. valid until the
      * entry is deleted or timed out */
     void *data;
-    struct nw_state_entry *next;
 } nw_state_entry;
 
 typedef struct nw_state_type {
@@ -61,18 +61,13 @@ typedef struct nw_state {
     nw_state_type type;
     uint32_t data_size;
     nw_cache *cache;
-    nw_state_entry **table;
-    uint32_t table_size;
-    uint32_t table_mask;
-    uint32_t used;
+    /* id -> nw_state_entry */
+    nw_dict *dict;
     uint32_t id_start;
 } nw_state;
 
 typedef struct nw_state_iterator {
-    nw_state *context;
-    int64_t index;
-    nw_state_entry *entry;
-    nw_state_entry *next_entry;
+    nw_dict_iterator iter;
 } nw_state_iterator;
 
 /* create a state table whose entries carry data_size bytes of user data

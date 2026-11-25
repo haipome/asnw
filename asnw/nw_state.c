@@ -9,8 +9,6 @@
 
 # include "nw_state.h"
 
-# define NW_STATE_HASH_TABLE_INIT_SIZE 64
-
 nw_state *nw_state_create(nw_state_type *type, uint32_t data_size)
 {
     if (type->on_timeout == NULL)
@@ -30,48 +28,14 @@ nw_state *nw_state_create(nw_state_type *type, uint32_t data_size)
         free(context);
         return NULL;
     }
-    context->table_size = NW_STATE_HASH_TABLE_INIT_SIZE;
-    context->table_mask = context->table_size - 1;
-    context->table = calloc(context->table_size, sizeof(nw_state_entry *));
-    if (context->table == NULL) {
+    context->dict = nw_dict_create(0);
+    if (context->dict == NULL) {
         nw_cache_release(context->cache);
         free(context);
         return NULL;
     }
 
     return context;
-}
-
-static int expand_if_needed(nw_state *context)
-{
-    if (context->used < context->table_size * 4)
-        return 0;
-
-    uint32_t new_table_size = context->table_size * 4;
-    uint32_t new_table_mask = new_table_size - 1;
-    nw_state_entry **new_table = calloc(new_table_size, sizeof(nw_state_entry *));
-    if (new_table == NULL) {
-        return -1;
-    }
-
-    for (uint32_t i = 0; i < context->table_size; ++i) {
-        nw_state_entry *entry = context->table[i];
-        nw_state_entry *next = NULL;
-        while (entry) {
-            next = entry->next;
-            uint32_t index = entry->id & new_table_mask;
-            entry->next = new_table[index];
-            new_table[index] = entry;
-            entry = next;
-        }
-    }
-
-    free(context->table);
-    context->table = new_table;
-    context->table_size = new_table_size;
-    context->table_mask = new_table_mask;
-
-    return 0;
 }
 
 static void state_release(nw_state *context, nw_state_entry *entry)
@@ -81,41 +45,14 @@ static void state_release(nw_state *context, nw_state_entry *entry)
     nw_cache_free(context->cache, entry);
 }
 
-/* take the entry out of the hash table, it stays allocated */
-static bool state_unlink(nw_state *context, nw_state_entry *entry)
-{
-    uint32_t index = entry->id & context->table_mask;
-    nw_state_entry *curr = context->table[index];
-    nw_state_entry *prev = NULL;
-    while (curr) {
-        if (curr == entry) {
-            if (prev) {
-                prev->next = entry->next;
-            } else {
-                context->table[index] = entry->next;
-            }
-            context->used--;
-            return true;
-        }
-        prev = curr;
-        curr = curr->next;
-    }
-    return false;
-}
-
-static void state_remove(nw_state *context, nw_state_entry *entry)
-{
-    if (state_unlink(context, entry))
-        state_release(context, entry);
-}
-
 static void on_timeout(struct ev_loop *loop, ev_timer *ev, int events)
 {
     nw_state_entry *entry = (nw_state_entry *)ev;
     nw_state *context = entry->context;
-    /* unlink first: whatever the callback does with this id (del, mod,
-     * add it again) can no longer touch the entry being timed out */
-    state_unlink(context, entry);
+    /* take it out of the dict first: whatever the callback does with this
+     * id (del, mod, add it again) can no longer touch the entry being
+     * timed out */
+    nw_dict_del(context->dict, entry->id);
     context->type.on_timeout(entry);
     state_release(context, entry);
 }
@@ -136,7 +73,7 @@ nw_state_entry *nw_state_add(nw_state *context, double timeout, uint32_t id)
 {
     if (id != 0 && nw_state_get(context, id) != NULL)
         return NULL;
-    if (context->used == UINT32_MAX)
+    if (nw_dict_count(context->dict) == UINT32_MAX)
         return NULL;
     nw_state_entry *entry = nw_cache_alloc(context->cache);
     if (entry == NULL) {
@@ -148,32 +85,22 @@ nw_state_entry *nw_state_add(nw_state *context, double timeout, uint32_t id)
     } else {
         entry->id = get_available_id(context);
     }
+    if (nw_dict_add(context->dict, entry->id, entry) < 0) {
+        nw_cache_free(context->cache, entry);
+        return NULL;
+    }
     ev_timer_init(&entry->ev, on_timeout, timeout, 0);
     ev_timer_start(context->loop, &entry->ev);
     entry->context = context;
     entry->data = ((void *)entry + sizeof(nw_state_entry));
     memset(entry->data, 0, context->data_size);
 
-    expand_if_needed(context);
-    uint32_t index = entry->id & context->table_mask;
-    entry->next = context->table[index];
-    context->table[index] = entry;
-    context->used++;
-
     return entry;
 }
 
 nw_state_entry *nw_state_get(nw_state *context, uint32_t id)
 {
-    uint32_t index = id & context->table_mask;
-    nw_state_entry *entry = context->table[index];
-    while (entry) {
-        if (entry->id == id)
-            return entry;
-        entry = entry->next;
-    }
-
-    return NULL;
+    return nw_dict_get(context->dict, id);
 }
 
 int nw_state_mod(nw_state *context, uint32_t id, double timeout)
@@ -194,30 +121,29 @@ int nw_state_del(nw_state *context, uint32_t id)
     if (entry == NULL)
         return -1;
     ev_timer_stop(context->loop, &entry->ev);
-    state_remove(context, entry);
+    nw_dict_del(context->dict, id);
+    state_release(context, entry);
 
     return 0;
 }
 
 size_t nw_state_count(nw_state *context)
 {
-    return context->used;
+    return nw_dict_count(context->dict);
 }
 
 void nw_state_release(nw_state *context)
 {
-    for (uint32_t i = 0; i < context->table_size; ++i) {
-        nw_state_entry *entry = context->table[i];
-        nw_state_entry *next = NULL;
-        while (entry) {
-            next = entry->next;
-            ev_timer_stop(context->loop, &entry->ev);
-            state_release(context, entry);
-            entry = next;
-        }
+    nw_dict_iterator iter;
+    nw_dict_entry *item;
+    nw_dict_iter_init(&iter, context->dict);
+    while ((item = nw_dict_next(&iter)) != NULL) {
+        nw_state_entry *entry = item->val;
+        ev_timer_stop(context->loop, &entry->ev);
+        state_release(context, entry);
     }
+    nw_dict_release(context->dict);
     nw_cache_release(context->cache);
-    free(context->table);
     free(context);
 }
 
@@ -226,33 +152,15 @@ nw_state_iterator *nw_state_get_iterator(nw_state *context)
     nw_state_iterator *iter = malloc(sizeof(nw_state_iterator));
     if (iter == NULL)
         return NULL;
-    memset(iter, 0, sizeof(nw_state_iterator));
-    iter->context = context;
-    iter->index = -1;
-    iter->entry = NULL;
-    iter->next_entry = NULL;
+    nw_dict_iter_init(&iter->iter, context->dict);
 
     return iter;
 }
 
 nw_state_entry *nw_state_next(nw_state_iterator *iter)
 {
-    while (true) {
-        if (iter->entry == NULL) {
-            iter->index++;
-            if (iter->index >= iter->context->table_size)
-                break;
-            iter->entry = iter->context->table[iter->index];
-        } else {
-            iter->entry = iter->next_entry;
-        }
-        if (iter->entry) {
-            iter->next_entry = iter->entry->next;
-            return iter->entry;
-        }
-    }
-
-    return NULL;
+    nw_dict_entry *item = nw_dict_next(&iter->iter);
+    return item ? item->val : NULL;
 }
 
 void nw_state_iterator_release(nw_state_iterator *iter)
