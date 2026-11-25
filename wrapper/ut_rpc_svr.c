@@ -3,6 +3,8 @@
  *     History: yang@haipo.me, 2016/03/29, create
  */
 
+# include <stdlib.h>
+# include <string.h>
 # include <assert.h>
 
 # include "ut_rpc_svr.h"
@@ -24,7 +26,7 @@ static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
         if (ses->ses_type != NW_SES_TYPE_COMMON)
             return;
         struct clt_info *info = ses->privdata;
-        info->last_heartbeat = current_timestamp();
+        info->last_heartbeat = rpc_monotonic_time();
         rpc_send(ses, &pkg);
         return;
     }
@@ -36,7 +38,7 @@ static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
 static void on_new_connection(nw_ses *ses)
 {
     struct clt_info *info = ses->privdata;
-    info->last_heartbeat = current_timestamp();
+    info->last_heartbeat = rpc_monotonic_time();
     rpc_svr *svr = ((nw_svr *)ses->svr)->privdata;
     if (svr->on_new_connection)
         svr->on_new_connection(ses);
@@ -63,7 +65,7 @@ static void on_privdata_free(void *svr, void *privdata)
 static void on_timer(nw_timer *timer, void *privdata)
 {
     rpc_svr *svr = privdata;
-    double now = current_timestamp();
+    double now = rpc_monotonic_time();
 
     nw_ses *curr = svr->raw_svr->clt_list_head;
     nw_ses *next;
@@ -131,8 +133,8 @@ int rpc_svr_stop(rpc_svr *svr)
 
 void rpc_svr_release(rpc_svr *svr)
 {
-    nw_svr_release(svr->raw_svr);
     nw_timer_stop(&svr->timer);
+    nw_svr_release(svr->raw_svr);
     nw_cache_release(svr->privdata_cache);
     free(svr);
 }

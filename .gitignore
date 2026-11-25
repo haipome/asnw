@@ -33,3 +33,6 @@
 
 # Dev build output
 build/
+
+# Dependency files
+*.d

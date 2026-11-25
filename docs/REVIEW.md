@@ -1,9 +1,12 @@
 # asnw 代码 Review（基于 63de198）
 
+> **状态更新**：下列问题已在 `dev-setup` 分支修复，逐项状态见文末「修复状态」。正文保留为修复前的描述，
+> 其中提到的 `kb_*.c` 复现用例已改名为 `t_*.c`，成为回归测试。
+
 范围：`asnw/` 全部 9 个模块（约 2300 行）、`wrapper/ut_rpc`、`test/` 与 `c1000k/` 示例。
 方法：通读源码；`gcc -Wall -Wextra`、cppcheck；为每个模块写单测，并在 ASan+UBSan、TSan、valgrind 下运行。
 
-标注说明：**已复现** = 有对应的 `unittest/kb_*.c`，`make check-asan` 可重现；**推断** = 由代码路径推出，尚未写测试验证。
+标注说明：**已复现** = 有对应的复现用例；**推断** = 由代码路径推出。
 
 ## 总体评价
 
@@ -51,13 +54,59 @@ tcp / udp / unix stream / unix dgram / seqpacket 五种传输的回显、fd 传�
 - **L7** wrapper：心跳用 `gettimeofday`，系统调时会造成批量断连（应使用 `ev_now` 或 CLOCK_MONOTONIC）；`rpc_clt_release` 泄漏 `name` 与 `addr_arr`；`rpc_send` 使用 1MB 静态缓冲区，非线程安全。
 - **L8** `asnw/makefile` 没有头文件依赖（`clean` 里删 `*.d` 但从不生成），改了结构体后旧 .o 不会重编；`-Wno-uninitialized` 关掉了一类有用告警；加 `-Wextra` 本可直接发现 H2。
 
-## 建议的修复顺序
+## 修复状态
 
-1. H2、H1、H5、H3：都是几行的改动，风险小，收益最大。
-2. H4：把“连接失败”的处理收敛到一处（`nw_ses_connect` 只返回错误，不回调），顺带解决递归。
-3. H6：`recvfrom` 前复位 `addrlen`；client 端收包用临时地址，或对 dgram client 直接 `connect()`。
-4. H8：EMFILE/ENFILE 时暂停 accept 一小段时间（或预留一个备用 fd）；`ECONNABORTED` 应继续循环。
-5. H7 与 M6：`rpc_decode` 先分别校验 `ext_size`/`body_size` 再相加；数据报路径 decode 返回 0 时丢弃。
-6. 之后再处理 M1–M5。M5、M7 主要是把约定写进头文件。
+| # | 状态 | 做法 | 回归测试 |
+|---|------|------|----------|
+| H1 | 已修复 | `nw_svr_free` 成为唯一的释放点：先释放各 ses 与 `host_addr`，再释放 cache，最后释放 buf pool | t_svr_release |
+| H2 | 已修复 | stream 与 packet 两种写法分开判断，不再做有符号/无符号混合比较；EAGAIN 时包留在队列里 | t_seqpacket_queue |
+| H3 | 已修复 | 所有发送改用 `send`/`sendmsg`/`sendto` 加 `MSG_NOSIGNAL` | t_sigpipe |
+| H4 | 已修复 | `nw_ses_connect` 同步失败只返回 -1、不再回调；失败处理收敛到 `close_and_reconnect` 一处；“立即重连”改为经事件循环的 0 延时定时器，不再递归 | t_clt_connect_fail |
+| H5 | 已修复 | `nw_clt_release` 先停定时器；连接成功后即解除连接超时定时器 | t_clt_release |
+| H6a | 已修复 | client 的 `peer_addr` 不再被来源地址覆盖；UDP client 丢弃非配置地址发来的包（目标是广播/多播/通配地址时除外） | t_udp_clt_peer |
+| H6b | 已修复 | 每次 `recvfrom` 使用独立的地址缓冲并复位长度 | t_unix_dgram_addrlen |
+| H7 | 已修复 | 先单独校验 `body_size`，再求和 | t_rpc_decode |
+| H8 | 已修复 | 预留一个备用 fd：EMFILE/ENFILE 时用它接收并立即关闭该连接，每个被拒连接上报一次错误；`ECONNABORTED` 继续循环 | t_accept_emfile |
+| M1 | 已修复 | 支持 `[ipv6]:port`（也接受 `ipv6:port`，端口取最后一个冒号之后）；端口必须是 0–65535 的十进制数；IPv6 地址打印为 `[ip]:port` | t_ipv6、t_sock |
+| M2 | 已修复 | release 时释放 cache；未执行/未投递的任务逐个调用 `on_cleanup` | t_job_release |
+| M3 | 部分修复 | bind 前只删除已存在的 **socket** 文件；dgram client 的本地路径不再动 `rand()` 种子，关闭时删除。**`chmod 0777` 未改**（见下） | t_svr_release、t_echo |
+| M4 | 已修复 | 设置缓冲区大小失败不再关闭 fd（尽力而为） | — |
+| M5 | 已修复 | `on_recv_fd` 后补上关闭检查；读写事件回调在 ses 被关闭或重启后不再继续写；生命周期约定写入 `nw_svr.h` | t_seqpacket_fd |
+| M6 | 已修复 | dgram/seqpacket 下 decode 返回 0 的包直接丢弃 | t_unix_dgram_addrlen |
+| M7 | 仅文档 | `buf_limit=0` 的含义、dgram 不排队、job 队列无上限已写入头文件。**行为未改**（见下） | — |
+| M8 | 已修复 | makefile、`test_state.c`、`listener_worker`（补 `decode_pkg`、失败时关 fd）、两处 `on_close` 返回值、两处 `memset` 参数 | 手工冒烟：echo_server、listener_worker |
+| L1 | 已修复 | `malloc` 判空；`nw_ses_init` 把 `sockfd` 置 -1；`svr_list` 用 `calloc` | t_clt_release |
+| L2 | 已修复 | `readlink` 失败时使用默认名 | — |
+| L3 | 已修复 | control 缓冲区清零，valgrind 抑制文件已删除 | t_seqpacket_fd（valgrind） |
+| L4 | 部分修复 | `F_GETFL` 返回值已检查。**`CLOEXEC`/`accept4` 未改**（见下） | — |
+| L5 | 仅文档 | 约束写入 `nw_timer.h`、`nw_evt.h`；库内部重设定时器前都先 stop | — |
+| L6 | 已修复 | 超时回调前先把条目摘出哈希表，回调里对同一 id 的任何操作都安全 | t_state |
+| L7 | 部分修复 | 心跳改用单调时钟（新增 `rpc_monotonic_time`，`current_timestamp` 语义不变）；`rpc_clt_release` 不再泄漏。**`rpc_send` 的静态缓冲区未改** | t_rpc |
+| L8 | 已修复 | `asnw/makefile` 增加 `-MMD -MP` 与 `-Wextra`，去掉 `-Wno-uninitialized` 和无效的 `-rdynamic` | — |
 
-每修一个，把对应的 `unittest/kb_xxx.c` 改名为 `t_xxx.c`，它就成为回归测试；`run.sh` 会把已修复但未改名的用例报成 XPASS 提醒。
+### 有意没改的
+
+这几项会改变对外行为或属于设计取舍，需要你来定：
+
+- **unix socket 的 `chmod 0777`**：收紧权限可能让以其他用户运行的客户端连不上。建议在 `nw_svr_bind` 里加一个可选的 mode 字段，默认保持 0777。
+- **`CLOEXEC` / `accept4`**：对 fork 后不 exec 的用法没有影响，但会改变 fd 继承语义；收益是每个连接省两次系统调用。
+- **背压与上限（M7）**：`buf_limit` 的默认值、`nw_ses_send` 是否返回“已排队”、stream 单次事件的读取上限、job 队列上限，都是接口层面的决定。
+- **`rpc_send` 的 1MB 静态缓冲区**：单线程使用没有问题，改动需要调整 wrapper 的内存模型。
+
+### 行为变化（升级时需要知道）
+
+1. client 的 `on_close` 现在每次失败只调用一次；`on_close` 返回 >0 的立即重连改为下一轮事件循环执行。
+2. `nw_ses_connect` 同步失败不再调用 `on_connect(false)`（nw_ses 是内部接口，`nw_clt` 的行为不变：用户仍会收到一次 `on_connect(false)`）。
+3. 对已启动的 client 再次调用 `nw_clt_start` 会先关闭旧连接再重连（原来会泄漏旧 fd）。
+4. UDP client 丢弃来源不是配置地址的数据报。
+5. dgram/seqpacket 下 `decode_pkg` 返回 0 的包不再以 size=0 交给 `on_recv_pkg`。
+6. 端口只接受十进制（原来 `strtoul` 以 0 为基数，`0x50` 这类写法也能通过）；IPv6 地址打印格式变为 `[ip]:port`。
+7. bind unix 地址时，如果路径上是普通文件，不再删除它，bind 会失败。
+8. `nw_state` 的 `on_timeout` 回调期间，该 state 已不在表中（`nw_state_get` 返回 NULL）。
+9. `nw_job_release` 会为未完成的任务调用 `on_cleanup`。
+10. fd 耗尽时新连接会被接收后立即关闭，而不是留在 backlog 里等待。
+
+### 验证范围
+
+20 个用例在 debug、release、ASan+UBSan、TSan、valgrind 五种构建下全部通过。
+**IPv6 只验证了地址解析**：验证环境没有 IPv6 回环地址，`t_echo` 里的 IPv6 回显用例被自动跳过，需要在有 IPv6 的机器上跑一次 `make check`。

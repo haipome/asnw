@@ -102,5 +102,9 @@ int main(void)
     CHECK(rpc_clt_connected(clt));
     CHECK_EQ(svr->raw_svr->clt_count, 1);
 
+    rpc_clt_release(clt);
+    ut_run_for(0.05);
+    CHECK_EQ(svr->raw_svr->clt_count, 0);
+    rpc_svr_release(svr);
     return 0;
 }

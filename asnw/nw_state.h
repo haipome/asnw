@@ -28,7 +28,9 @@ typedef struct nw_state_entry {
 typedef struct nw_state_type {
     /* must
      *
-     * called when a state is timeout, after call, the state will be automatic deleted */
+     * called when a state is timeout, after call, the state will be automatic deleted.
+     * during the call the state is already out of the table: nw_state_get on
+     * its id returns NULL and the id may be added again */
     void (*on_timeout)(nw_state_entry *entry);
     /* optional
      *
@@ -65,7 +67,8 @@ int nw_state_del(nw_state *context, uint32_t id);
 size_t nw_state_count(nw_state *context);
 void nw_state_release(nw_state *context);
 
-/* traverse the state machine */
+/* traverse the state machine. deleting the entry just returned is allowed;
+ * adding entries or deleting other ones invalidates the iterator */
 nw_state_iterator *nw_state_get_iterator(nw_state *context);
 nw_state_entry *nw_state_next(nw_state_iterator *iter);
 void nw_state_iterator_release(nw_state_iterator *iter);

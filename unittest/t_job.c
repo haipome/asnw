@@ -37,8 +37,11 @@ static void on_cleanup(nw_job_entry *entry)
         nw_loop_break();
 }
 
+static int release_count;
+
 static void on_release(void *privdata)
 {
+    release_count++;
     free(privdata);
 }
 
@@ -53,6 +56,7 @@ int main(void)
     type.on_init = on_init;
     CHECK(nw_job_create(&type, 4) == NULL);         /* on_init needs on_release */
     type.on_release = on_release;
+    CHECK(nw_job_create(&type, 0) == NULL);         /* at least one worker */
     type.on_finish = on_finish;
     type.on_cleanup = on_cleanup;
 
@@ -70,6 +74,7 @@ int main(void)
     CHECK_EQ(cleanup_count, JOBS);
     CHECK_EQ(sum, expect);
 
-    /* nw_job_release is exercised in kb_job_release_leak.c */
+    nw_job_release(job);
+    CHECK_EQ(release_count, 4);
     return 0;
 }

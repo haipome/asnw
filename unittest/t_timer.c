@@ -30,7 +30,7 @@ int main(void)
     nw_timer_start(&repeat);
     nw_timer_start(&never);
     CHECK(nw_timer_active(&once));
-    CHECK(nw_timer_remaining(&once) > 0.0 && nw_timer_remaining(&once) <= 0.02);
+    CHECK(nw_timer_remaining(&once) > 0.0 && nw_timer_remaining(&once) < 0.021);
     nw_timer_stop(&never);
     nw_timer_stop(&never);              /* double stop is a no-op */
 

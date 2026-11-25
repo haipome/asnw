@@ -25,6 +25,7 @@ typedef struct nw_timer {
  * set the timer call the callback after interval seconds.
  * if repeated is true, callback will be called every interval seconds
  * privdata will pass to callback function
+ * the timer must not be active: stop a started timer before setting it again
  */
 void nw_timer_set(nw_timer *timer, double interval, bool repeated, nw_timer_callback callback, void *privdata);
 void nw_timer_start(nw_timer *timer);

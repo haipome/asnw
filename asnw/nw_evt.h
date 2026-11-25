@@ -20,7 +20,8 @@ void nw_loop_run(void);
 /* break event loop */
 void nw_loop_break(void);
 
-/* break event loop after specail seconds */
+/* break event loop after specail seconds. only has an effect while the loop
+ * is running, i.e. when called from a callback */
 void nw_loop_break_later(double waittime);
 
 # endif

@@ -4,7 +4,7 @@
 #   make                  library + wrapper + examples + unit tests (debug)
 #   make check            run unit tests (debug build)
 #   make check-asan       same under AddressSanitizer + UBSan, plus the
-#                         known-bug reproducers in unittest/kb_*.c
+#                         reproducers for open bugs (unittest/kb_*.c), if any
 #   make check-tsan       thread pool test under ThreadSanitizer
 #   make check-valgrind   unit tests under valgrind memcheck
 #   make lint             gcc -Wextra and cppcheck over the library
@@ -17,7 +17,7 @@ VARIANT ?= debug
 CC      ?= gcc
 B       := build/$(VARIANT)
 
-CFLAGS_COMMON  := -std=gnu11 -g -Wall -Wno-strict-aliasing -MMD -MP -Iasnw -Iwrapper
+CFLAGS_COMMON  := -std=gnu11 -g -Wall -Wextra -Wno-unused-parameter -Wno-pointer-arith -Wno-strict-aliasing -MMD -MP -Iasnw -Iwrapper
 CFLAGS_debug   := -O0
 CFLAGS_release := -O2
 CFLAGS_asan    := -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined

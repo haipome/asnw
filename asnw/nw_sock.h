@@ -48,9 +48,12 @@ int nw_sock_set_mode(nw_addr_t *addr, mode_t mode);
 /*
  * input: cfg, format: protocol@address
  * protocol list: TCP, UDP, STREAM, DGRAM, SEQPACKET (case-insensitive)
- * addr type: ip:port or unix path. ip can support ipv6
+ * addr type: ip:port or unix path. ipv6 is written [ip]:port (ip:port is
+ * accepted too, the port is what follows the last colon)
  * example: tcp@127.0.0.1:3333
+ *          tcp@[::1]:3333
  *          dgram@/tmp/test.sock
+ * return 0 on success, < 0 on a malformed cfg
  *
  * output: addr, sock_type
  * sock_type list: SOCK_STREAM, SOCK_DGRAM, SOCK_SEQPACKET

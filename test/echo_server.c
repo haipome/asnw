@@ -80,7 +80,7 @@ int main(int argc, char *argv[])
         printf("malloc fail\n");
         exit(0);
     }
-    memset(bind_arr, sizeof(nw_svr_bind) * bind_count, 0);
+    memset(bind_arr, 0, sizeof(nw_svr_bind) * bind_count);
     for (int i = 0; i < bind_count; ++i) {
         int ret = nw_sock_cfg_parse(argv[i + 1], &bind_arr[i].addr, &bind_arr[i].sock_type);
         if (ret < 0) {

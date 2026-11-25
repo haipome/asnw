@@ -35,6 +35,7 @@ void on_connect(nw_ses *ses, bool result)
 int on_close(nw_ses *ses)
 {
     printf("connection to: %s close\n", nw_sock_human_addr(&ses->peer_addr));
+    return 0;
 }
 
 void on_recv_pkg(nw_ses *ses, void *data, size_t size)

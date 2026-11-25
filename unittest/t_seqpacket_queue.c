@@ -1,5 +1,5 @@
 /*
- * KNOWN BUG: queued seqpacket messages are silently dropped.
+ * Regression (fixed): queued seqpacket messages are silently dropped.
  * In on_can_write() (nw_ses.c) the result of nw_write_packet() is an int
  * that is compared with a size_t: `if (nwrite < size)`. When sendmsg()
  * returns -1 (EAGAIN while flushing the pending list) the -1 is converted

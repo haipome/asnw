@@ -37,7 +37,11 @@ typedef struct rpc_pkg {
 int rpc_decode(nw_ses *ses, void *data, size_t max);
 int rpc_send(nw_ses *ses, rpc_pkg *pkg);
 
+/* wall clock, seconds since the epoch */
 double current_timestamp(void);
+/* monotonic clock for measuring intervals (heartbeat): not affected by the
+ * system time being changed */
+double rpc_monotonic_time(void);
 
 # define RPC_HEARTBEAT_INTERVAL 1.0
 # define RPC_HEARTBEAT_TIMEOUT  3.0

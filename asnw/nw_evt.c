@@ -17,9 +17,10 @@ static ev_timer break_timer;
 
 static void fatal_error(const char *msg)
 {
-    char exe_path[PATH_MAX];
+    char exe_path[PATH_MAX] = "asnw";
     ssize_t ret = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
-    exe_path[ret] = 0;
+    if (ret > 0)
+        exe_path[ret] = 0;
 
     openlog(basename(exe_path), LOG_PERROR | LOG_PID, LOG_DAEMON);
     syslog(LOG_ERR, "%s", msg);
@@ -47,6 +48,7 @@ void nw_loop_run(void)
     
     running = 1;
     ev_run(nw_default_loop, 0);
+    running = 0;
     return;
 }
 

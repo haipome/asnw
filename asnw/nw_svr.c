@@ -5,6 +5,7 @@
 
 # include <stdlib.h>
 # include <stdio.h>
+# include <string.h>
 # include <unistd.h>
 
 # include "nw_svr.h"
@@ -32,22 +33,15 @@ static int create_socket(int family, int sock_type)
     return sockfd;
 }
 
-static int set_socket_option(nw_svr *svr, int sockfd)
+/* best effort: a refused buffer size is not a reason to drop the connection */
+static void set_socket_option(nw_svr *svr, int sockfd)
 {
     if (svr->read_mem > 0) {
-        if (nw_sock_set_recv_buf(sockfd, svr->read_mem) < 0) {
-            close(sockfd);
-            return -1;
-        }
+        nw_sock_set_recv_buf(sockfd, svr->read_mem);
     }
     if (svr->write_mem > 0) {
-        if (nw_sock_set_send_buf(sockfd, svr->write_mem) < 0) {
-            close(sockfd);
-            return -1;
-        }
+        nw_sock_set_send_buf(sockfd, svr->write_mem);
     }
-
-    return 0;
 }
 
 static void on_error(nw_ses *ses, const char *msg)
@@ -74,21 +68,24 @@ static void on_recv_fd(nw_ses *ses, int fd)
     close(fd);
 }
 
+/* the single place that frees a server; also used on a half built one */
 static void nw_svr_free(nw_svr *svr)
 {
-    if (svr->buf_pool)
-        nw_buf_pool_release(svr->buf_pool);
-    if (svr->clt_cache)
-        nw_cache_release(svr->clt_cache);
     if (svr->svr_list) {
         for (uint32_t i = 0; i < svr->svr_count; ++i) {
-            if (svr->svr_list[i].write_buf != NULL) {
-                nw_ses_release(&svr->svr_list[i]);
-                free(svr->svr_list[i].host_addr);
+            nw_ses *ses = &svr->svr_list[i];
+            if (ses->write_buf != NULL) {
+                nw_ses_release(ses);
             }
+            free(ses->host_addr);
         }
         free(svr->svr_list);
     }
+    /* sessions hand their bufs back to the pool, so the pool goes last */
+    if (svr->clt_cache)
+        nw_cache_release(svr->clt_cache);
+    if (svr->buf_pool)
+        nw_buf_pool_release(svr->buf_pool);
     free(svr);
 }
 
@@ -110,6 +107,9 @@ static int nw_svr_add_clt(nw_ses *ses, int sockfd, nw_addr_t *peer_addr)
 
     nw_ses *clt = nw_cache_alloc(svr->clt_cache);
     if (clt == NULL) {
+        if (privdata) {
+            svr->type.on_privdata_free(svr, privdata);
+        }
         return -1;
     }
     memset(clt, 0, sizeof(nw_ses));
@@ -206,7 +206,7 @@ nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
     memset(svr, 0, sizeof(nw_svr));
     svr->type = *type;
     svr->svr_count = cfg->bind_count;
-    svr->svr_list = malloc(sizeof(nw_ses) * svr->svr_count);
+    svr->svr_list = calloc(svr->svr_count, sizeof(nw_ses));
     if (svr->svr_list == NULL) {
         nw_svr_free(svr);
         return NULL;
@@ -225,7 +225,6 @@ nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
     svr->read_mem = cfg->read_mem;
     svr->write_mem = cfg->write_mem;
     svr->privdata = privdata;
-    memset(svr->svr_list, 0, sizeof(nw_ses) * svr->svr_count);
     for (uint32_t i = 0; i < svr->svr_count; ++i) {
         nw_ses *ses = &svr->svr_list[i];
         int sockfd = create_socket(cfg->bind_arr[i].addr.family, cfg->bind_arr[i].sock_type);
@@ -235,11 +234,13 @@ nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
         }
         nw_addr_t *host_addr = malloc(sizeof(nw_addr_t));
         if (host_addr == NULL) {
+            close(sockfd);
             nw_svr_free(svr);
             return NULL;
         }
         memcpy(host_addr, &cfg->bind_arr[i].addr, sizeof(nw_addr_t));
         if (nw_ses_init(ses, nw_default_loop, svr->buf_pool, svr->buf_limit, NW_SES_TYPE_SERVER) < 0) {
+            close(sockfd);
             free(host_addr);
             nw_svr_free(svr);
             return NULL;
@@ -307,10 +308,9 @@ void nw_svr_release(nw_svr *svr)
         nw_cache_free(svr->clt_cache, curr);
         curr = next;
     }
-    for (uint32_t i = 0; i < svr->svr_count; ++i) {
-        nw_ses_release(&svr->svr_list[i]);
-    }
-    nw_cache_release(svr->clt_cache);
+    svr->clt_list_head = NULL;
+    svr->clt_list_tail = NULL;
+    svr->clt_count = 0;
     nw_svr_free(svr);
 }
 

@@ -1,7 +1,7 @@
 SOURCE  := $(wildcard *.c)
 OBJS    := $(patsubst %.c, %.o, $(SOURCE))
 CC      := gcc
-CFLAGS  := -Wall -Wno-strict-aliasing -Wno-uninitialized -g -rdynamic -std=gnu11
+CFLAGS  := -Wall -Wextra -Wno-unused-parameter -Wno-pointer-arith -Wno-strict-aliasing -g -std=gnu11 -MMD -MP
 
 .PHONY : all clean install 
 
@@ -16,4 +16,6 @@ $(TARGET) : $(OBJS)
 	ar -rs $@ $^
 .c.o :
 	$(CC) $(CFLAGS) -c -o $@ $< $(INCS)
+
+-include $(OBJS:.o=.d)
 

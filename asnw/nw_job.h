@@ -74,7 +74,13 @@ typedef struct nw_job {
 } nw_job;
 
 nw_job *nw_job_create(nw_job_type *type, int thread_count);
+/* queue a job. call it from the loop thread only: on_finish / on_cleanup
+ * run there and share the entry cache. the queue has no upper bound */
 int nw_job_add(nw_job *job, uint32_t id, void *request);
+/* stop the workers (a job being processed is waited for) and free the pool.
+ * jobs that were still queued, or finished but not yet delivered, are not
+ * run / not passed to on_finish; on_cleanup is called for each of them so
+ * request and reply can be freed */
 void nw_job_release(nw_job *job);
 
 # endif

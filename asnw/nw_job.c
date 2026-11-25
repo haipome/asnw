@@ -4,6 +4,7 @@
  */
 
 # include <stdlib.h>
+# include <string.h>
 # include <unistd.h>
 # include <assert.h>
 
@@ -56,7 +57,10 @@ static void *thread_routine(void *data)
             job->reply_tail = entry;
         }
         job->reply_count += 1;
-        write(job->pipefd[1], " ", 1);
+        /* wake the loop thread. the pipe is non blocking: if it is full
+         * there are wake-ups pending already, so a failed write is fine */
+        if (write(job->pipefd[1], " ", 1) < 0) {
+        }
         pthread_mutex_unlock(&job->lock);
     }
 
@@ -104,7 +108,21 @@ static void nw_job_free(nw_job *job)
     pthread_cond_destroy(&job->notify);
     if (job->threads)
         free(job->threads);
+    if (job->cache)
+        nw_cache_release(job->cache);
     free(job);
+}
+
+/* jobs that will never be finished: let the user free request/reply */
+static void drop_entries(nw_job *job, nw_job_entry *entry)
+{
+    while (entry) {
+        nw_job_entry *next = entry->next;
+        if (job->type.on_cleanup)
+            job->type.on_cleanup(entry);
+        nw_cache_free(job->cache, entry);
+        entry = next;
+    }
 }
 
 nw_job *nw_job_create(nw_job_type *type, int thread_count)
@@ -112,6 +130,8 @@ nw_job *nw_job_create(nw_job_type *type, int thread_count)
     if (!type->on_job)
         return NULL;
     if (type->on_init && !type->on_release)
+        return NULL;
+    if (thread_count <= 0)
         return NULL;
 
     nw_job *job = malloc(sizeof(nw_job));
@@ -161,11 +181,15 @@ nw_job *nw_job_create(nw_job_type *type, int thread_count)
         if (job->type.on_init) {
             arg->privdata = job->type.on_init();
             if (arg->privdata == NULL) {
+                free(arg);
                 nw_job_release(job);
                 return NULL;
             }
         }
         if (pthread_create(&job->threads[i], NULL, thread_routine, arg) != 0) {
+            if (arg->privdata)
+                job->type.on_release(arg->privdata);
+            free(arg);
             nw_job_release(job);
             return NULL;
         }
@@ -225,6 +249,12 @@ void nw_job_release(nw_job *job)
     ev_io_stop(job->loop, &job->ev);
     close(job->pipefd[0]);
     close(job->pipefd[1]);
+    /* all workers are gone, no lock needed. requests still queued and
+     * replies not yet delivered get on_cleanup (not on_finish) */
+    drop_entries(job, job->request_head);
+    drop_entries(job, job->reply_head);
+    job->request_head = job->request_tail = NULL;
+    job->reply_head = job->reply_tail = NULL;
     nw_job_free(job);
 }
 

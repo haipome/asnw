@@ -1,5 +1,5 @@
 /*
- * KNOWN BUG: sending to a peer that already closed raises SIGPIPE.
+ * Regression (fixed): sending to a peer that already closed raises SIGPIPE.
  * nw_ses uses write()/sendmsg() without MSG_NOSIGNAL and the library never
  * ignores SIGPIPE, so a client that disconnects with a reply still pending
  * kills the whole server process unless the application remembers to

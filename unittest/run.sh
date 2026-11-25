@@ -3,11 +3,10 @@
 #   unittest/run.sh <build-dir> <debug|release|asan|tsan|valgrind> [test-name]
 #
 # t_*   must pass.
-# kb_*  reproduce known library bugs and are expected to FAIL (reported as
-#       XFAIL). They run in the asan variant only, where every one of them is
-#       detected reliably. When a bug gets fixed its test shows up as XPASS
-#       and the run fails: rename the file from kb_ to t_ to make it a
-#       regression test.
+# kb_*  minimal reproducers for known, not yet fixed bugs. They are expected
+#       to FAIL (reported as XFAIL) and run in the asan variant only. Once the
+#       bug is fixed the test shows up as XPASS and the run fails: rename the
+#       file from kb_ to t_ to make it a regression test.
 set -u
 build=$1
 mode=$2
@@ -28,7 +27,7 @@ for bin in "$dir"/t_* "$dir"/kb_*; do
     [[ $name == kb_* && $mode != asan ]] && continue
 
     cmd=("$bin")
-    [[ $mode == valgrind ]] && cmd=(valgrind -q --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite --suppressions=unittest/valgrind.supp "$bin")
+    [[ $mode == valgrind ]] && export ASNW_UT_VALGRIND=1 && cmd=(valgrind -q --error-exitcode=99 --leak-check=full --errors-for-leak-kinds=definite "$bin")
     timeout 60 "${cmd[@]}" >"$log/$name.log" 2>&1
     rc=$?
 

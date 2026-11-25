@@ -21,6 +21,22 @@ static void on_release(nw_state_entry *entry)
     release_count++;
 }
 
+/* a retry pattern: the timed out state is added again under the same id */
+static nw_state *retry_state;
+static int retry_timeouts;
+
+static void retry_on_timeout(nw_state_entry *entry)
+{
+    uint32_t id = entry->id;
+    CHECK(nw_state_get(retry_state, id) == NULL);   /* already out of the table */
+    CHECK_EQ(nw_state_del(retry_state, id), -1);
+    if (++retry_timeouts < 3) {
+        nw_state_entry *again = nw_state_add(retry_state, 0.01, id);
+        CHECK(again != NULL);
+        CHECK(again != entry);
+    }
+}
+
 int main(void)
 {
     nw_state_type type;
@@ -93,6 +109,17 @@ int main(void)
     size_t left = nw_state_count(state);
     nw_state_release(state);
     CHECK_EQ(release_count - before, left);
+
+    nw_state_type retry_type;
+    memset(&retry_type, 0, sizeof(retry_type));
+    retry_type.on_timeout = retry_on_timeout;
+    retry_state = nw_state_create(&retry_type, 0);
+    CHECK(retry_state != NULL);
+    CHECK(nw_state_add(retry_state, 0.01, 42) != NULL);
+    ut_run_for(0.2);
+    CHECK_EQ(retry_timeouts, 3);
+    CHECK_EQ(nw_state_count(retry_state), 0);
+    nw_state_release(retry_state);
 
     return 0;
 }

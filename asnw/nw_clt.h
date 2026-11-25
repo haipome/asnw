@@ -15,7 +15,15 @@
 # include "nw_sock.h"
 # include "nw_timer.h"
 
-/* nw_clt is a client object, will keep connection to the special addr */
+/* nw_clt is a client object, will keep connection to the special addr
+ *
+ * a dgram client is usable right after nw_clt_start (on_connect is not
+ * called) and always sends to the configured addr. udp datagrams arriving
+ * from any other address are dropped, unless the configured addr is a
+ * broadcast, multicast or wildcard address.
+ *
+ * do not send before a stream client is connected (check nw_clt_connected):
+ * the failed write is treated as a connection error. */
 
 typedef struct nw_clt_cfg {
     /* the target server addr */
@@ -31,7 +39,8 @@ typedef struct nw_clt_cfg {
     uint32_t read_mem;
     /* will call nw_sock_set_send_buf if not 0 */
     uint32_t write_mem;
-    /* interval to reconnect when the stream connection is close */
+    /* interval to reconnect when the stream connection is close, also the
+     * timeout of a connect attempt. default 1.0 */
     double reconnect_timeout;
     /* buf factory, if set to NULL, nw_clt will create it */
     nw_buf_pool *buf_pool;
@@ -50,8 +59,9 @@ typedef struct nw_clt_type {
     int (*decode_pkg)(nw_ses *ses, void *data, size_t max);
     /* optional
      *
-     * called when the connection is close. if on_close return > 0,
-     * nw_clt will try reconnect immediately */
+     * called once each time the connection is closed or a connect attempt
+     * fails. if on_close return > 0, nw_clt will try reconnect immediately
+     * (from the event loop), otherwise after reconnect_timeout */
     int (*on_close)(nw_ses *ses);
     /* optional
      *
@@ -79,6 +89,8 @@ typedef struct nw_clt {
     nw_timer timer;
     bool connected;
     bool on_connect_called;
+    /* a unix dgram client binds a private socket file, removed on close */
+    bool local_path_bound;
     double reconnect_timeout;
     uint32_t read_mem;
     uint32_t write_mem;

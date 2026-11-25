@@ -33,6 +33,22 @@ int main(void)
     CHECK_EQ(nw_sock_cfg_parse("SeqPacket@/tmp/a.sock", &addr, &type), 0);
     CHECK_EQ(type, SOCK_SEQPACKET);
 
+    CHECK_EQ(nw_sock_cfg_parse("tcp@[2001:db8::1]:443", &addr, &type), 0);
+    CHECK_EQ(addr.family, AF_INET6);
+    CHECK_EQ(addr.addrlen, sizeof(struct sockaddr_in6));
+    CHECK(strcmp(nw_sock_human_addr(&addr), "[2001:db8::1]:443") == 0);
+    CHECK(strcmp(nw_sock_ip(&addr), "2001:db8::1") == 0);
+
+    CHECK_EQ(nw_sock_cfg_parse("tcp@127.0.0.1:0", &addr, &type), 0);
+    CHECK_EQ(nw_sock_cfg_parse("tcp@127.0.0.1:65535", &addr, &type), 0);
+    CHECK_EQ(nw_sock_cfg_parse("tcp@127.0.0.1:65536", &addr, &type), -4);  /* port out of range */
+    CHECK_EQ(nw_sock_cfg_parse("tcp@127.0.0.1:http", &addr, &type), -4);   /* port not a number */
+    CHECK_EQ(nw_sock_cfg_parse("tcp@127.0.0.1:80x", &addr, &type), -4);
+    CHECK_EQ(nw_sock_cfg_parse("tcp@127.0.0.1:", &addr, &type), -4);
+    CHECK_EQ(nw_sock_cfg_parse("tcp@[::1]", &addr, &type), -3);            /* no port */
+    CHECK_EQ(nw_sock_cfg_parse("tcp@[::1:80", &addr, &type), -3);
+    CHECK_EQ(nw_sock_cfg_parse("stream@", &addr, &type), -5);              /* empty path */
+
     CHECK_EQ(nw_sock_cfg_parse("127.0.0.1:1234", &addr, &type), -1);       /* no protocol */
     CHECK_EQ(nw_sock_cfg_parse("sctp@127.0.0.1:1234", &addr, &type), -2);  /* unknown protocol */
     CHECK_EQ(nw_sock_cfg_parse("tcp@127.0.0.1", &addr, &type), -3);        /* no port */

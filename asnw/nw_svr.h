@@ -15,6 +15,25 @@
 
 /* nw_svr is a server object bind on multi addrs with same data process method */
 
+/*
+ * session lifetime
+ *
+ * a nw_ses passed to a callback is only valid until that connection is
+ * closed. the memory is recycled for later connections, so a nw_ses pointer
+ * kept across asynchronous work (nw_job, nw_state, a timer ...) may by then
+ * belong to a different client. keep the pair (ses, ses->id) instead and
+ * check `ses->id == saved_id` before using the pointer: ids are unique per
+ * server and never 0, and a closed session has id 0.
+ *
+ * for a dgram bind, the nw_ses in on_recv_pkg is the listening session and
+ * nw_ses_send replies to the sender of the datagram being processed; reply
+ * inside the callback, or copy ses->peer_addr if you need it later.
+ *
+ * buf_limit = 0 means the pending send list of a connection is unlimited:
+ * a peer that stops reading can then hold any amount of memory. set a limit
+ * for servers exposed to untrusted clients.
+ */
+
 typedef struct nw_svr_bind {
     /* bind addr */
     nw_addr_t addr;

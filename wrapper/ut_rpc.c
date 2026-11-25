@@ -4,6 +4,8 @@
  */
 
 # include <stdlib.h>
+# include <string.h>
+# include <time.h>
 # include <assert.h>
 # include <endian.h>
 # include <byteswap.h>
@@ -37,7 +39,12 @@ int rpc_decode(nw_ses *ses, void *data, size_t max)
     rpc_pkg *pkg = data;
     if (le32toh(pkg->magic) != RPC_PKG_MAGIC)
         return -1;
-    uint32_t pkg_size = RPC_PKG_HEAD_SIZE + le16toh(pkg->ext_size) + le32toh(pkg->body_size);
+    /* check body_size on its own first: the sum below is 32 bit and a
+     * body_size near 4G would wrap around to a small, valid looking size */
+    uint32_t body_size = le32toh(pkg->body_size);
+    if (body_size > RPC_MAX_PKG_SIZE)
+        return -2;
+    uint32_t pkg_size = RPC_PKG_HEAD_SIZE + le16toh(pkg->ext_size) + body_size;
     if (pkg_size > RPC_MAX_PKG_SIZE)
         return -2;
     if (max < pkg_size)
@@ -69,6 +76,8 @@ int rpc_send(nw_ses *ses, rpc_pkg *pkg)
         assert(send_buf != NULL);
     }
 
+    if (pkg->body_size > RPC_MAX_PKG_SIZE)
+        return -1;
     uint32_t pkg_size = RPC_PKG_HEAD_SIZE + pkg->ext_size + pkg->body_size;
     if (pkg_size > RPC_MAX_PKG_SIZE)
         return -1;
@@ -93,6 +102,13 @@ int rpc_send(nw_ses *ses, rpc_pkg *pkg)
     pkg->crc32 = htole32(generate_crc32c(send_buf, pkg_size));
 
     return nw_ses_send(ses, send_buf, pkg_size);
+}
+
+double rpc_monotonic_time(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + ts.tv_nsec / 1000000000.0;
 }
 
 double current_timestamp(void)

@@ -22,11 +22,6 @@ struct ctx {
 
 static struct ctx *cur;
 
-/* never released (see kb_*.c), kept reachable for LeakSanitizer */
-static nw_svr *all_svr[8];
-static nw_clt *all_clt[8];
-static int case_count;
-
 static int make_msg(char *buf, size_t size, int seq, int pad)
 {
     int n = snprintf(buf, size, "%08d ", seq);
@@ -103,12 +98,14 @@ static void run_case(const char *name, const char *cfg_str, int total)
     st.on_new_connection = svr_on_new_connection;
     st.on_recv_pkg = svr_on_recv_pkg;
     st.on_error_msg = on_error_msg;
-    nw_svr *svr = ut_svr(cfg_str, &st, MAX_PKG, NULL);
+    nw_svr *svr = ut_svr(strncmp(cfg_str, "tcp6@", 5) == 0 ? "tcp@[::1]:0" : cfg_str, &st, MAX_PKG, NULL);
 
     char real_cfg[256];
     snprintf(real_cfg, sizeof(real_cfg), "%s", cfg_str);
     if (strncmp(cfg_str, "tcp@", 4) == 0) {
         snprintf(real_cfg, sizeof(real_cfg), "tcp@127.0.0.1:%d", ut_svr_port(svr, 0));
+    } else if (strncmp(cfg_str, "tcp6@", 5) == 0) {
+        snprintf(real_cfg, sizeof(real_cfg), "tcp@[::1]:%d", ut_svr_port(svr, 0));
     } else if (strncmp(cfg_str, "udp@", 4) == 0) {
         snprintf(real_cfg, sizeof(real_cfg), "udp@127.0.0.1:%d", ut_svr_port(svr, 0));
     }
@@ -121,8 +118,6 @@ static void run_case(const char *name, const char *cfg_str, int total)
     ct.on_error_msg = on_error_msg;
     c.clt = ut_clt(real_cfg, &ct, MAX_PKG, 1.0, NULL);
     CHECK_EQ(nw_clt_start(c.clt), 0);
-    all_svr[case_count] = svr;
-    all_clt[case_count++] = c.clt;
 
     bool stream = c.clt->ses.sock_type == SOCK_STREAM;
     bool dgram = c.clt->ses.sock_type == SOCK_DGRAM;
@@ -145,12 +140,19 @@ static void run_case(const char *name, const char *cfg_str, int total)
     if (stream)
         CHECK_EQ(c.clt->ses.write_buf->count, 0);
 
-    /* stop listening and drop the client so the next case starts clean;
-     * nw_svr_release / nw_clt_release have known bugs, see kb_*.c */
-    nw_clt_close(c.clt);
-    nw_svr_stop(svr);
+    /* a unix dgram client binds a private socket file and removes it on close */
+    char local_path[sizeof(c.clt->ses.host_addr->un.sun_path)] = "";
+    if (dgram && c.clt->ses.peer_addr.family == AF_UNIX) {
+        strcpy(local_path, c.clt->ses.host_addr->un.sun_path);
+        CHECK_EQ(access(local_path, F_OK), 0);
+    }
+
+    nw_clt_release(c.clt);
     ut_run_for(0.05);
     CHECK_EQ(svr->clt_count, 0);
+    nw_svr_release(svr);
+    if (local_path[0])
+        CHECK_EQ(access(local_path, F_OK), -1);
 }
 
 int main(void)
@@ -159,6 +161,19 @@ int main(void)
 
     run_case("tcp", "tcp@127.0.0.1:0", 20000);
     run_case("udp", "udp@127.0.0.1:0", 50);
+
+    int v6 = socket(AF_INET6, SOCK_STREAM, 0);
+    struct sockaddr_in6 in6;
+    memset(&in6, 0, sizeof(in6));
+    in6.sin6_family = AF_INET6;
+    in6.sin6_addr = in6addr_loopback;
+    if (v6 >= 0 && bind(v6, (struct sockaddr *)&in6, sizeof(in6)) == 0) {
+        close(v6);
+        run_case("tcp ipv6", "tcp6@", 2000);
+    } else {
+        fprintf(stderr, "[tcp ipv6] skipped: no ipv6 loopback on this host\n");
+    }
+
     ut_unix_cfg(cfg, sizeof(cfg), "stream", "echo_stream.sock");
     run_case("unix stream", cfg, 20000);
     ut_unix_cfg(cfg, sizeof(cfg), "dgram", "echo_dgram.sock");
