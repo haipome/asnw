@@ -3,6 +3,9 @@
  *     History: yang@haipo.me, 2016/03/19, create
  */
 
+# ifndef _GNU_SOURCE
+# define _GNU_SOURCE     /* accept4 */
+# endif
 # include <stdio.h>
 # include <string.h>
 # include <errno.h>
@@ -150,7 +153,7 @@ static int shed_connection(nw_ses *ses)
     pthread_mutex_lock(&idle_lock);
     if (idle_fd >= 0) {
         close(idle_fd);
-        int sockfd = accept(ses->sockfd, NULL, NULL);
+        int sockfd = accept4(ses->sockfd, NULL, NULL, SOCK_CLOEXEC);
         if (sockfd >= 0) {
             close(sockfd);
             ret = 1;
@@ -237,7 +240,8 @@ static void on_can_read(nw_ses *ses)
                     return;
             }
             while (true) {
-                int ret = read(ses->sockfd, ses->read_buf->data + ses->read_buf->wpos, nw_buf_avail(ses->read_buf));
+                size_t want = nw_buf_avail(ses->read_buf);
+                int ret = read(ses->sockfd, ses->read_buf->data + ses->read_buf->wpos, want);
                 if (ret < 0) {
                     if (errno == EINTR) {
                         continue;
@@ -260,11 +264,14 @@ static void on_can_read(nw_ses *ses)
                     /* shutting down: read on, so that the peer's close is
                      * seen, but nobody wants the data any more */
                     ses->read_buf->rpos = ses->read_buf->wpos = 0;
-                    continue;
-                }
-
-                if (!stream_decode(ses))
+                } else if (!stream_decode(ses)) {
                     return;
+                }
+                /* less than asked for: the socket is empty, another read
+                 * would only say so. what comes next, the end of the
+                 * stream included, is announced by the event loop */
+                if ((size_t)ret < want)
+                    break;
             }
             if (nw_buf_size(ses->read_buf) == 0) {
                 nw_buf_free(ses->pool, ses->read_buf);
@@ -347,7 +354,8 @@ static void on_can_read(nw_ses *ses)
                 msg.msg_control = control;
                 msg.msg_controllen = sizeof(control);
 
-                int ret = recvmsg(ses->sockfd, &msg, 0);
+                /* a file descriptor that comes along is close-on-exec */
+                int ret = recvmsg(ses->sockfd, &msg, MSG_CMSG_CLOEXEC);
                 if (ret < 0) {
                     if (errno == EINTR) {
                        continue;
@@ -467,7 +475,8 @@ static void on_can_accept(nw_ses *ses)
         memset(&peer_addr, 0, sizeof(peer_addr));
         peer_addr.family = ses->host_addr->family;
         peer_addr.addrlen = ses->host_addr->addrlen;
-        int sockfd = accept(ses->sockfd, NW_SOCKADDR(&peer_addr), &peer_addr.addrlen);
+        /* non-blocking and close-on-exec from the start */
+        int sockfd = accept4(ses->sockfd, NW_SOCKADDR(&peer_addr), &peer_addr.addrlen, SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (sockfd < 0) {
             if (errno == EINTR || errno == ECONNABORTED || errno == EPROTO) {
                 /* ECONNABORTED: that connection is gone, the next one may be fine */

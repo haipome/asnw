@@ -133,7 +133,8 @@ typedef struct nw_svr_type {
      *
      * called for every connection accepted on a stream or seqpacket bind,
      * in place of the default action, which is to add the connection to the
-     * server. ses is the listening session, sockfd the new connection.
+     * server. ses is the listening session, sockfd the new connection,
+     * non-blocking and close-on-exec.
      * return < 0 and sockfd is closed for you; otherwise sockfd is yours:
      * hand it to another process (nw_ses_send_fd), or close it.
      * see test/listener_worker.c */
@@ -165,7 +166,8 @@ typedef struct nw_svr_type {
     /* optional
      *
      * called when a file descriptor arrives on a seqpacket connection.
-     * the fd is yours, close it when done. if not set, it is closed */
+     * the fd is yours, close it when done; it is close-on-exec. if not
+     * set, it is closed */
     void (*on_recv_fd)(nw_ses *ses, int fd);
     /* optional
      *
@@ -330,15 +332,17 @@ void nw_svr_iter_init(nw_svr_iterator *iter, nw_svr *svr);
 nw_ses *nw_svr_next(nw_svr_iterator *iter);
 
 /* add an already connected socket to the server as if it had been accepted
- * here, e.g. a fd received from another process in on_recv_fd. the server
- * must have a bind of the same address family. return 0, or -1 on failure,
+ * here, e.g. a fd received from another process in on_recv_fd. it is made
+ * non-blocking and close-on-exec. the server must have a bind of the same
+ * address family. return 0, or -1 on failure,
  * in which case fd is still yours to close */
 int nw_svr_add_clt_fd(nw_svr *svr, int fd);
 
 /* same for a connection that was accepted somewhere else on the address of
  * bind number bind_index (in cfg order) of an identically configured
  * server: it becomes a connection of that bind here. peer_addr is what
- * accept said. this is how nw_hub moves connections to its threads.
+ * accept said. fd has to be non-blocking, as the one given to on_accept
+ * is. this is how nw_hub moves connections to its threads.
  * return 0, or -1 on failure, in which case fd is still yours to close */
 int nw_svr_add_accepted_fd(nw_svr *svr, uint32_t bind_index, int fd, nw_addr_t *peer_addr);
 

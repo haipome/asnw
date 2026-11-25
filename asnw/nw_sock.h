@@ -117,6 +117,11 @@ int nw_sock_set_recv_buf(int sockfd, int buf_size);
 /* make a socket non blocking */
 int nw_sock_set_nonblock(int sockfd);
 
+/* have a socket closed when the process executes another program, so
+ * that it is not handed down to it. every socket the library creates or
+ * accepts is like that */
+int nw_sock_set_cloexec(int sockfd);
+
 /* disable the Nagle algorithm of a tcp socket (TCP_NODELAY) */
 int nw_sock_set_no_delay(int sockfd);
 

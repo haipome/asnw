@@ -83,13 +83,9 @@ static void need_timer(nw_svr *svr, double period)
 
 static int create_socket(int family, int sock_type)
 {
-    int sockfd = socket(family, sock_type, 0);
+    int sockfd = socket(family, sock_type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sockfd < 0)
         return -1;
-    if (nw_sock_set_nonblock(sockfd) < 0) {
-        close(sockfd);
-        return -1;
-    }
     if (nw_sock_set_reuse_addr(sockfd) < 0) {
         close(sockfd);
         return -1;
@@ -166,9 +162,6 @@ static int nw_svr_add_clt(nw_ses *ses, int sockfd, nw_addr_t *peer_addr)
 {
     nw_svr *svr = (nw_svr *)ses->svr;
     set_socket_option(svr, sockfd);
-    if (nw_sock_set_nonblock(sockfd) < 0) {
-        return -1;
-    }
 
     void *privdata = NULL;
     if (svr->type.on_privdata_alloc) {
@@ -249,6 +242,10 @@ int nw_svr_add_clt_fd(nw_svr *svr, int fd)
 {
     nw_addr_t peer_addr;
     if (nw_sock_peer_addr(fd, &peer_addr) < 0) {
+        return -1;
+    }
+    /* it comes from somewhere else: make it what an accepted one is */
+    if (nw_sock_set_nonblock(fd) < 0 || nw_sock_set_cloexec(fd) < 0) {
         return -1;
     }
     nw_ses *ses = NULL;

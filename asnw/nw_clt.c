@@ -14,12 +14,8 @@
 
 static int create_socket(int family, int sock_type)
 {
-    int sockfd = socket(family, sock_type, 0);
+    int sockfd = socket(family, sock_type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (sockfd < 0) {
-        return -1;
-    }
-    if (nw_sock_set_nonblock(sockfd) < 0) {
-        close(sockfd);
         return -1;
     }
     if (sock_type == SOCK_STREAM && (family == AF_INET || family == AF_INET6)) {

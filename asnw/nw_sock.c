@@ -288,6 +288,16 @@ int nw_sock_set_nonblock(int sockfd)
     return 0;
 }
 
+int nw_sock_set_cloexec(int sockfd)
+{
+    int flags = fcntl(sockfd, F_GETFD, 0);
+    if (flags < 0)
+        return -1;
+    if (fcntl(sockfd, F_SETFD, flags | FD_CLOEXEC) != 0)
+        return -1;
+    return 0;
+}
+
 int nw_sock_set_no_delay(int sockfd)
 {
     int val = 1;
