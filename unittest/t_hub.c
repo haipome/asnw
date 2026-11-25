@@ -35,6 +35,9 @@ static void check_thread(nw_ses *ses)
     nw_hub *h = nw_hub_of(ses);
     if (h != hub || nw_hub_index(h) != (int)nw_hub_index_of(ses->id) || nw_hub_svr(h) != ses->svr)
         ADD(wrong_thread);
+    /* the privdata of the hub is the privdata of every nw_svr in it */
+    if (((nw_svr *)ses->svr)->privdata != &hub)
+        ADD(wrong_thread);
 }
 
 static void *on_privdata_alloc(void *svr)
@@ -118,6 +121,37 @@ static void svr_on_recv_pkg(nw_ses *ses, void *data, size_t size)
         while (GET(wake_up) == 0)
             usleep(1000);
     }
+}
+
+/* nw_hub_post: runs on the worker asked for, with the data given */
+static int posted[THREADS], posted_all, posted_inline;
+
+static void on_post(nw_hub *h, void *data, size_t size)
+{
+    int *want = data;
+    if (h != hub || size != sizeof(int) || nw_hub_index(h) != *want || nw_hub_svr(h) == NULL)
+        ADD(wrong_thread);
+    ADD(posted[*want]);
+}
+
+static void on_post_all(nw_hub *h, void *data, size_t size)
+{
+    if (size != 5 || memcmp(data, "hello", 5) != 0 || nw_hub_index(h) < 0)
+        ADD(wrong_thread);
+    ADD(posted_all);
+}
+
+static void on_post_empty(nw_hub *h, void *data, size_t size)
+{
+    if (size != 0)
+        ADD(wrong_thread);
+    /* a worker asking itself is served at once */
+    int before = GET(posted[nw_hub_index(h)]);
+    int me = nw_hub_index(h);
+    if (nw_hub_post(h, me, on_post, &me, sizeof(me)) != 0 || GET(posted[me]) != before + 1)
+        ADD(wrong_thread);
+    nw_hub_post_all(h, on_post_all, "hello", 5);
+    ADD(posted_inline);
 }
 
 static int on_thread_start(nw_hub *h, uint32_t index)
@@ -281,6 +315,20 @@ int main(void)
     CHECK_EQ(nw_hub_index(hub), -1);        /* this is not a worker */
     CHECK(nw_hub_svr(hub) == NULL);
     CHECK(nw_hub_of(&hub->acceptor->svr_list[1]) == hub);
+    CHECK(hub->acceptor->privdata == &hub);
+
+    /* a function of ours on a worker, and on all of them */
+    for (int i = 0; i < THREADS; ++i)
+        CHECK_EQ(nw_hub_post(hub, i, on_post, &i, sizeof(i)), 0);
+    CHECK_EQ(nw_hub_post(hub, THREADS, on_post, NULL, 0), -1);
+    CHECK_EQ(nw_hub_post_all(hub, on_post_all, "hello", 5), 0);
+    CHECK_EQ(nw_hub_post(hub, 1, on_post_empty, NULL, 0), 0);
+    for (int i = 0; i < 1000 && GET(posted_all) < 2 * THREADS; ++i)
+        usleep(1000);
+    for (int i = 0; i < THREADS; ++i)
+        CHECK_EQ(GET(posted[i]), i == 1 ? 2 : 1);
+    CHECK_EQ(GET(posted_all), 2 * THREADS);
+    CHECK_EQ(GET(posted_inline), 1);
     snprintf(tcp_cfg, sizeof(tcp_cfg), "tcp@127.0.0.1:%d", ut_svr_port(hub->acceptor, 0));
 
     nw_clt_type ct;

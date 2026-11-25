@@ -31,7 +31,7 @@ Protocols built on the core, which knows nothing about them:
 | Module | What it is |
 |--------|------------|
 | `nw_http` | HTTP/1.0 and 1.1 server, with zero copy request parsing. |
-| `nw_ws` | WebSocket server (RFC 6455): messages, broadcast, pings. |
+| `nw_ws` | WebSocket server (RFC 6455): messages, broadcast, pings. On one thread, or on several with `thread_count`. |
 | `wrapper/ut_rpc` | A simple binary RPC protocol, server and client, with heartbeats and failover. Kept outside the library as an example of wrapping it. |
 
 ## Build
@@ -216,6 +216,7 @@ int main(void)
 - **Zero copy reads.** A message that comes in one frame is unmasked in place and handed over where it lies in the read buffer; only a message split into several frames is put together in a buffer of its own.
 - **Per connection data.** `on_privdata_alloc` / `on_privdata_free` give every connection a struct of yours, reached with `nw_ws_privdata(ses)`. The upgrade request is only valid in `on_upgrade`, so that is where to copy what you need from it.
 - **Pushing.** `nw_ws_broadcast_text` sends to everybody. To push to one client from outside its callbacks, keep `ses->id` and use `nw_ws_send_text_id(svr, id, ...)`.
+- **Several threads.** Set `thread_count` in the cfg and the server runs on a `nw_hub`: the thread that created it accepts, the connections live on that many worker threads and their callbacks run there. Sending and closing by id and the broadcasts work from any thread. The callbacks stay as they are if they only use per connection data; data shared between connections is yours to lock. 0, the default, means no threads at all.
 - **Keeping connections alive.** With `ping_interval` set the server pings silent clients; one that stays silent for `keep_alive_timeout` is closed.
 - **Not supported:** TLS, compression (it is declined, clients fall back), UTF-8 validation of text messages, plain HTTP on the same port. A message has to fit in `max_message_size` (64K by default).
 
@@ -252,7 +253,7 @@ The protocol name is case insensitive. Hosts are numeric addresses; there is no 
 
 **Clients.** A stream client retries every `reconnect_timeout` seconds (default 1.0), which is also how long a connect attempt may take. `on_close` is called once per lost connection or failed attempt; return > 0 from it to retry at once, or call `nw_clt_close` from it to stay closed. Check `nw_clt_connected` before sending. A datagram client is usable right after `nw_clt_start` and ignores UDP packets from any address other than its server.
 
-**Several threads.** `nw_hub` takes the same config and callbacks as `nw_svr` (in `cfg.svr` and `type.svr`) plus a thread count. A connection is given to one worker thread and stays there; its callbacks run on that thread, where `ses->svr` is an ordinary `nw_svr` holding the connections of that thread, so everything above applies unchanged. Connections on different threads reach each other by id: `nw_hub_send`, `nw_hub_close`, `nw_hub_shutdown` and `nw_hub_broadcast` may be called from any thread and queue the request for the thread that owns the connection (`queue_limit` bounds what may wait for a thread that is stuck). What the library cannot do for you: data of your own that several connections share is now used by several threads, so lock it or keep one copy per thread, set up in `on_thread_start`. Stream and seqpacket binds only.
+**Several threads.** `nw_hub` takes the same config and callbacks as `nw_svr` (in `cfg.svr` and `type.svr`) plus a thread count. A connection is given to one worker thread and stays there; its callbacks run on that thread, where `ses->svr` is an ordinary `nw_svr` holding the connections of that thread, so everything above applies unchanged. Connections on different threads reach each other by id: `nw_hub_send`, `nw_hub_close`, `nw_hub_shutdown` and `nw_hub_broadcast` may be called from any thread and queue the request for the thread that owns the connection (`queue_limit` bounds what may wait for a thread that is stuck); `nw_hub_post` runs a function of yours on a given worker. What the library cannot do for you: data of your own that several connections share is now used by several threads, so lock it or keep one copy per thread, set up in `on_thread_start`. Stream and seqpacket binds only.
 
 **Threads.** Every thread has an event loop of its own: what a thread creates (servers, clients, timers ...) runs on that thread, inside its `nw_loop_run`. A program with one thread need not think about any of this. Several threads can each run their own loop side by side, as nothing is shared between them, but there is no locking: an object and its connections may only be used by the thread that created them. To pass something to another thread, use a queue of your own and an `ev_async` watcher on the receiver's `nw_default_loop`. A thread other than the main one calls `nw_loop_release` before it exits. For blocking work there is `nw_job`: the work runs on worker threads and its `on_finish` callback runs back on the loop thread.
 
@@ -267,7 +268,7 @@ Built into `build/debug/test/`, `build/debug/wrapper/` and `build/debug/c1000k/`
 | `test/echo_server` | Echo server on any number of addresses: `echo_server 'tcp@127.0.0.1:1234' 'stream@/tmp/echo.sock'` |
 | `test/http_server` | HTTP server, try it with curl: `http_server 'tcp@127.0.0.1:8080'` |
 | `test/hub_server` | Chat server on N threads: `hub_server 4 'tcp@127.0.0.1:1234'`, then `nc 127.0.0.1 1234` in a few terminals |
-| `test/ws_server` | WebSocket chat room: `ws_server 'tcp@127.0.0.1:8081'`, then connect from a browser console |
+| `test/ws_server` | WebSocket chat room: `ws_server 'tcp@127.0.0.1:8081'`, then connect from a browser console. `ws_server 4 'tcp@...'` runs it on 4 threads |
 | `test/test_clt` | Client that pings a server once a second: `test_clt 'tcp@127.0.0.1:1234'` |
 | `test/listener_worker` | One process accepts and hands each connection to one of N worker processes by passing its fd: `listener_worker 'tcp@127.0.0.1:1234' 10` |
 | `test/test_timer`, `test/test_state` | Timer and state table |

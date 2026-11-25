@@ -25,10 +25,12 @@
  *
  * you write the same callbacks as for a nw_svr. they are called on the
  * worker thread of the connection, and inside them everything works as in
- * a single threaded server: ses->svr is the nw_svr of that worker, and
- * every nw_svr function can be used on it and on the connections of the
- * same worker (nw_ses_send, nw_svr_close_clt, nw_svr_shutdown_clt, the
- * timeouts, the iterator ...). there are no locks to take.
+ * a single threaded server: ses->svr is the nw_svr of that worker (the
+ * privdata of every nw_svr of a hub is the one given to nw_hub_create),
+ * and every nw_svr function
+ * can be used on it and on the connections of the same worker
+ * (nw_ses_send, nw_svr_close_clt, nw_svr_shutdown_clt, the timeouts, the
+ * iterator ...). there are no locks to take.
  *
  * what is new is that connections on different workers cannot touch each
  * other directly, and that your own data, if several connections share
@@ -42,6 +44,9 @@
  * they act at once; from elsewhere the request is queued for that worker
  * (the data is copied) and carried out a moment later.
  *
+ * for anything else that has to happen on a certain worker there is
+ * nw_hub_post, which runs a function of yours there.
+ *
  * ids are unique in the whole hub, never 0 and never reused; the worker
  * of a connection can be told from its id.
  *
@@ -51,14 +56,18 @@
 
 typedef struct nw_hub nw_hub;
 
+/* a function to run on a worker thread, see nw_hub_post. data is only
+ * valid during the call */
+typedef void (*nw_hub_callback)(nw_hub *hub, void *data, size_t size);
+
 typedef struct nw_hub_cfg {
     /* addresses, sizes, limits and the idle timeout: see nw_svr_cfg. a
      * bind must not be of type SOCK_DGRAM */
     nw_svr_cfg svr;
     /* number of worker threads, 1 to NW_HUB_MAX_THREADS */
     uint32_t thread_count;
-    /* max bytes of data (nw_hub_send, nw_hub_broadcast from other
-     * threads) that may wait for one worker; beyond it they fail. a worker
+    /* max bytes of data (nw_hub_send, nw_hub_broadcast, nw_hub_post from
+     * other threads) that may wait for one worker; beyond it they fail. a worker
      * that is stuck in a callback can then not pile up memory without
      * end. 0 means no limit */
     size_t queue_limit;
@@ -89,6 +98,19 @@ typedef struct nw_hub_type {
      * called on every worker thread before it ends, after its connections
      * were closed. release here what on_thread_start created */
     void (*on_thread_stop)(nw_hub *hub, uint32_t index);
+    /* optional, for a layer that wraps a nw_svr (nw_ws does). if set,
+     * svr_release must be set too
+     *
+     * called on every worker thread, before on_thread_start, to create
+     * the nw_svr of that worker in place of the default, which is
+     * nw_svr_create(&cfg.svr, &type.svr, privdata). the server must have
+     * the binds of cfg.svr and must not be started. its callbacks are the
+     * ones used for the connections; type.svr then only serves the hub
+     * thread (on_error_msg). return NULL on failure */
+    nw_svr *(*svr_create)(nw_hub *hub, uint32_t index);
+    /* called on the worker thread when it ends, after on_thread_stop, to
+     * release what svr_create made. the connections are closed already */
+    void (*svr_release)(nw_hub *hub, uint32_t index, nw_svr *svr);
 } nw_hub_type;
 
 /* the fields are for reading only */
@@ -106,8 +128,10 @@ struct nw_hub {
     pthread_mutex_t lock;
     pthread_cond_t cond;
     /* the privdata given to nw_hub_create. reach it from a callback with
-     * nw_hub_of(ses)->privdata */
+     * ((nw_svr *)ses->svr)->privdata, or nw_hub_of(ses)->privdata */
     void *privdata;
+    /* the hubs created by one thread */
+    struct nw_hub *next;
 };
 
 /* create a hub and start its worker threads (on_thread_start is called on
@@ -160,11 +184,27 @@ int nw_hub_shutdown(nw_hub *hub, uint64_t id);
  * (queue_limit, out of memory); the others still get it */
 int nw_hub_broadcast(nw_hub *hub, const void *data, size_t size);
 
+/* run callback on worker `index`, with a copy of data (size may be 0).
+ * if the calling thread is that worker, it is called at once, before this
+ * returns; otherwise a moment later. on the worker nw_hub_svr gives its
+ * nw_svr. requests made by one thread to one worker are carried out in
+ * the order they were made, this one and the four above alike.
+ * return 0, or -1 if it could not be queued (no such worker, queue_limit,
+ * out of memory) */
+int nw_hub_post(nw_hub *hub, uint32_t index, nw_hub_callback callback, const void *data, size_t size);
+
+/* run callback on every worker, each with the same copy of data, which
+ * the callback must not change. return 0, or -1 if some worker could not
+ * be reached; the others still run it */
+int nw_hub_post_all(nw_hub *hub, nw_hub_callback callback, const void *data, size_t size);
+
 /*
  * for the callbacks
  */
 
-/* the hub a connection (or listening session) belongs to */
+/* the hub a session belongs to: a connection, asked on its worker thread,
+ * or a listening session, asked on the hub thread (in on_error_msg).
+ * NULL for anything else */
 nw_hub *nw_hub_of(nw_ses *ses);
 
 /* the index of the calling worker thread of this hub, -1 if the calling

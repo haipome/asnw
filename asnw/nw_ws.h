@@ -12,6 +12,7 @@
 
 # include "nw_buf.h"
 # include "nw_svr.h"
+# include "nw_hub.h"
 # include "nw_http.h"
 
 /*
@@ -51,6 +52,22 @@
  * and use the _id functions; they do nothing if the client is gone. see the
  * session lifetime note in nw_svr.h.
  *
+ * several threads
+ *
+ * with thread_count in the cfg the server runs on a nw_hub: the thread
+ * that creates it only accepts, and every connection lives on one of
+ * thread_count worker threads, where all its callbacks are called. see
+ * nw_hub.h for what that means for your own data.
+ *
+ * each worker has a nw_ws_svr of its own, which is what nw_ws_svr_of
+ * returns in a callback; its raw_svr holds the connections of that thread
+ * and its privdata is the one given to nw_ws_svr_create. everything that
+ * takes a nw_ses is used as before, on the thread of that connection. the
+ * functions that take a server and an id (the _id functions, the
+ * broadcasts) may be called from any thread, with the server returned by
+ * nw_ws_svr_create or with the one of any worker: they act at once for a
+ * connection of the calling thread and are queued for the others.
+ *
  * what is not supported
  *
  *   - TLS (wss): put a reverse proxy in front
@@ -69,6 +86,8 @@
 # define NW_WS_CLOSE_POLICY         1008
 # define NW_WS_CLOSE_TOO_BIG        1009
 # define NW_WS_CLOSE_SERVER_ERROR   1011
+
+typedef struct nw_ws_svr nw_ws_svr;
 
 typedef struct nw_ws_svr_cfg {
     /* number of entries in bind_arr, at least 1 */
@@ -107,6 +126,14 @@ typedef struct nw_ws_svr_cfg {
      * which has to match exactly. clients that send no Origin header are
      * refused. NULL accepts everybody. copied */
     const char *origin;
+    /* optional
+     *
+     * 0: no threads, everything runs on the thread that calls nw_loop_run.
+     * 1 and more: that many worker threads, see "several threads" above */
+    uint32_t thread_count;
+    /* with threads: max bytes that may wait for one worker thread, see
+     * nw_hub_cfg. 0 means no limit */
+    size_t queue_limit;
 } nw_ws_svr_cfg;
 
 typedef struct nw_ws_svr_type {
@@ -155,12 +182,26 @@ typedef struct nw_ws_svr_type {
      * called to free what on_privdata_alloc returned: after on_close, or
      * right away if on_upgrade refused the client */
     void (*on_privdata_free)(void *svr, void *privdata);
+    /* optional, with threads only
+     *
+     * called on every worker thread before it gets any connection, to set
+     * up what that thread needs (timers, a nw_job, clients ...). svr is
+     * the server of that thread, index is 0 .. thread_count - 1.
+     * return < 0 if that fails: nw_ws_svr_create then fails */
+    int (*on_thread_start)(nw_ws_svr *svr, uint32_t index);
+    /* optional, with threads only
+     *
+     * called on every worker thread before it ends, after its connections
+     * were closed */
+    void (*on_thread_stop)(nw_ws_svr *svr, uint32_t index);
 } nw_ws_svr_type;
 
 /* the fields are for reading only */
-typedef struct nw_ws_svr {
+struct nw_ws_svr {
     /* the nw_svr underneath: raw_svr->clt_count, nw_svr_next ... note that
-     * it also holds the connections that have not finished the handshake */
+     * it also holds the connections that have not finished the handshake.
+     * with threads: the connections of this thread; in the server returned
+     * by nw_ws_svr_create, the one that accepts, which has none */
     nw_svr *raw_svr;
     nw_ws_svr_type type;
     /* the privdata given to nw_ws_svr_create */
@@ -171,11 +212,20 @@ typedef struct nw_ws_svr {
     char *protocol;
     char *origin;
     nw_cache *conn_cache;
-} nw_ws_svr;
+    /* with threads: the hub, NULL otherwise */
+    nw_hub *hub;
+    /* in the server of a worker thread: the one nw_ws_svr_create returned */
+    struct nw_ws_svr *front;
+    /* internal, only valid during nw_ws_svr_create */
+    nw_ws_svr_cfg *creating_cfg;
+};
 
-/* create a server. cfg and type are copied. return NULL if on_message is
- * missing, on_privdata_alloc is set without on_privdata_free, a bind is
- * not SOCK_STREAM, or nw_svr_create fails */
+/* create a server. cfg and type are copied. with threads the worker
+ * threads are started here and the calling thread becomes the one that
+ * accepts: it calls the next three functions and runs nw_loop_run.
+ * return NULL if on_message is missing, on_privdata_alloc is set without
+ * on_privdata_free, a bind is not SOCK_STREAM, or the nw_svr (or nw_hub)
+ * underneath can't be created */
 nw_ws_svr *nw_ws_svr_create(nw_ws_svr_cfg *cfg, nw_ws_svr_type *type, void *privdata);
 
 /* bind and start accepting. return 0 or -1, see nw_svr_start */
@@ -185,7 +235,8 @@ int nw_ws_svr_start(nw_ws_svr *svr);
 int nw_ws_svr_stop(nw_ws_svr *svr);
 
 /* close every connection (on_close is called for each) and free the
- * server. don't call it from a callback of this server */
+ * server; with threads, also end the worker threads. don't call it from
+ * a callback of this server */
 void nw_ws_svr_release(nw_ws_svr *svr);
 
 /* the server a session belongs to, for use in the callbacks */
@@ -207,13 +258,19 @@ int nw_ws_send_text(nw_ses *ses, const char *message);
 int nw_ws_send_binary(nw_ses *ses, const void *data, size_t size);
 
 /* the same for a connection known by its id (ses->id), for sending from
- * anywhere. return -1 as well if that connection is gone */
+ * anywhere. return -1 as well if that connection is gone.
+ * with threads, for a connection of another thread: the message is copied
+ * and queued; 0 then means queued (if the connection is gone when its
+ * thread gets to it, the message is dropped), -1 that it could not be */
 int nw_ws_send_text_id(nw_ws_svr *svr, uint64_t id, const char *message);
 int nw_ws_send_binary_id(nw_ws_svr *svr, uint64_t id, const void *data, size_t size);
 
 /* send a message to every connection that finished the handshake. a
  * connection that can't take it is closed, the others still get it.
- * return the number of connections it was sent to */
+ * return the number of connections it was sent to.
+ * with threads it goes to the connections of all threads, the frame being
+ * built once; the return value is then 0, or -1 if some thread could not
+ * be reached (the others still get it) */
 int nw_ws_broadcast_text(nw_ws_svr *svr, const char *message);
 int nw_ws_broadcast_binary(nw_ws_svr *svr, const void *data, size_t size);
 
@@ -226,5 +283,9 @@ int nw_ws_broadcast_binary(nw_ws_svr *svr, const void *data, size_t size);
  * closed at once.
  */
 void nw_ws_close(nw_ses *ses, uint16_t code, const char *reason);
+
+/* the same by id. nothing happens if the connection is gone. return 0, or
+ * -1 if, with threads, the request could not be queued */
+int nw_ws_close_id(nw_ws_svr *svr, uint64_t id, uint16_t code, const char *reason);
 
 # endif

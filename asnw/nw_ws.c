@@ -254,49 +254,132 @@ int nw_ws_send_binary(nw_ses *ses, const void *data, size_t size)
     return send_frame(ses, NW_WS_OP_BINARY, data, size);
 }
 
+/*
+ * with threads (svr->hub is set) a connection belongs to one worker, which
+ * is told by its id. svr may be the server of any thread, or the front
+ * one. return the server of the calling thread if that is the worker of
+ * id, NULL if the request has to travel.
+ */
+static nw_ws_svr *server_here(nw_ws_svr *svr, uint64_t id)
+{
+    if (svr->hub == NULL)
+        return svr;
+    if (nw_hub_index(svr->hub) != (int)nw_hub_index_of(id))
+        return NULL;
+    return nw_hub_svr(svr->hub)->privdata;
+}
+
+/* what travels to the worker of a connection: a frame to send, or a close */
+struct id_request {
+    uint64_t id;
+    uint8_t opcode;
+    uint16_t code;
+    char data[];
+};
+
+/* on the worker of the connection */
+static void on_id_request(nw_hub *hub, void *data, size_t size)
+{
+    struct id_request *request = data;
+    nw_svr *raw_svr = nw_hub_svr(hub);
+    nw_ses *ses = nw_svr_get_clt(raw_svr, request->id);
+    if (ses == NULL)
+        return;
+    size_t data_size = size - sizeof(struct id_request);
+    if (request->opcode == NW_WS_OP_CLOSE) {
+        /* the reason was sent along with its '\0' */
+        nw_ws_close(ses, request->code, data_size > 1 ? request->data : NULL);
+    } else if (can_send(ses)) {
+        send_frame(ses, request->opcode, request->data, data_size);
+    }
+}
+
+static int post_id_request(nw_ws_svr *svr, uint64_t id, uint8_t opcode, uint16_t code, const void *data, size_t size)
+{
+    if (id == 0)
+        return -1;
+    struct id_request *request = malloc(sizeof(struct id_request) + size);
+    if (request == NULL)
+        return -1;
+    memset(request, 0, sizeof(struct id_request));
+    request->id = id;
+    request->opcode = opcode;
+    request->code = code;
+    if (size > 0)
+        memcpy(request->data, data, size);
+    int ret = nw_hub_post(svr->hub, nw_hub_index_of(id), on_id_request, request, sizeof(struct id_request) + size);
+    free(request);
+    return ret;
+}
+
+static int send_id(nw_ws_svr *svr, uint64_t id, uint8_t opcode, const void *data, size_t size)
+{
+    nw_ws_svr *here = server_here(svr, id);
+    if (here == NULL)
+        return post_id_request(svr, id, opcode, 0, data, size);
+    nw_ses *ses = nw_svr_get_clt(here->raw_svr, id);
+    if (ses == NULL || !can_send(ses))
+        return -1;
+    return send_frame(ses, opcode, data, size);
+}
+
 int nw_ws_send_text_id(nw_ws_svr *svr, uint64_t id, const char *message)
 {
-    nw_ses *ses = nw_svr_get_clt(svr->raw_svr, id);
-    if (ses == NULL)
-        return -1;
-    return nw_ws_send_text(ses, message);
+    return send_id(svr, id, NW_WS_OP_TEXT, message, strlen(message));
 }
 
 int nw_ws_send_binary_id(nw_ws_svr *svr, uint64_t id, const void *data, size_t size)
 {
-    nw_ses *ses = nw_svr_get_clt(svr->raw_svr, id);
-    if (ses == NULL)
-        return -1;
-    return nw_ws_send_binary(ses, data, size);
+    return send_id(svr, id, NW_WS_OP_BINARY, data, size);
+}
+
+/* send a finished frame to every connection of one nw_svr that can take it */
+static int broadcast_frame(nw_svr *raw_svr, const void *frame, size_t frame_size)
+{
+    int count = 0;
+    nw_svr_iterator iter;
+    nw_ses *ses;
+    nw_svr_iter_init(&iter, raw_svr);
+    /* a send that fails closes that connection, which the iterator allows,
+     * and the others still get their copy */
+    while ((ses = nw_svr_next(&iter)) != NULL) {
+        if (can_send(ses) && nw_ses_send(ses, frame, frame_size) == 0)
+            count++;
+    }
+    return count;
+}
+
+/* on every worker */
+static void on_broadcast(nw_hub *hub, void *data, size_t size)
+{
+    broadcast_frame(nw_hub_svr(hub), data, size);
 }
 
 static int broadcast(nw_ws_svr *svr, uint8_t opcode, const void *data, size_t size)
 {
-    /* the frame is the same for everybody: a small one is put together
-     * once, here, and the same bytes go to every connection */
-    uint8_t buf[NW_WS_MAX_HEADER_SIZE + NW_WS_SMALL_FRAME_SIZE];
-    size_t frame_size = 0;
-    if (size <= NW_WS_SMALL_FRAME_SIZE) {
-        frame_size = frame_header(buf, opcode, size);
-        if (size > 0)
-            memcpy(buf + frame_size, data, size);
-        frame_size += size;
+    /* the frame is the same for everybody: it is put together once, here,
+     * and the same bytes go to every connection, on every thread */
+    uint8_t small[NW_WS_MAX_HEADER_SIZE + NW_WS_SMALL_FRAME_SIZE];
+    uint8_t *frame = small;
+    if (size > NW_WS_SMALL_FRAME_SIZE) {
+        frame = malloc(NW_WS_MAX_HEADER_SIZE + size);
+        if (frame == NULL)
+            return svr->hub ? -1 : 0;
     }
+    size_t frame_size = frame_header(frame, opcode, size);
+    if (size > 0)
+        memcpy(frame + frame_size, data, size);
+    frame_size += size;
 
-    int count = 0;
-    nw_svr_iterator iter;
-    nw_ses *ses;
-    nw_svr_iter_init(&iter, svr->raw_svr);
-    /* a send that fails closes that connection, which the iterator allows,
-     * and the others still get their copy */
-    while ((ses = nw_svr_next(&iter)) != NULL) {
-        if (!can_send(ses))
-            continue;
-        int ret = frame_size ? nw_ses_send(ses, buf, frame_size) : send_frame(ses, opcode, data, size);
-        if (ret == 0)
-            count++;
+    int ret;
+    if (svr->hub) {
+        ret = nw_hub_post_all(svr->hub, on_broadcast, frame, frame_size);
+    } else {
+        ret = broadcast_frame(svr->raw_svr, frame, frame_size);
     }
-    return count;
+    if (frame != small)
+        free(frame);
+    return ret;
 }
 
 int nw_ws_broadcast_text(nw_ws_svr *svr, const char *message)
@@ -767,6 +850,17 @@ static void on_connection_close(nw_ses *ses)
     conn->message = NULL;
 }
 
+int nw_ws_close_id(nw_ws_svr *svr, uint64_t id, uint16_t code, const char *reason)
+{
+    nw_ws_svr *here = server_here(svr, id);
+    if (here == NULL)
+        return post_id_request(svr, id, NW_WS_OP_CLOSE, code, reason, reason ? strlen(reason) + 1 : 0);
+    nw_ses *ses = nw_svr_get_clt(here->raw_svr, id);
+    if (ses)
+        nw_ws_close(ses, code, reason);
+    return 0;
+}
+
 static void on_error_msg(nw_ses *ses, const char *msg)
 {
     report(nw_ws_svr_of(ses), ses, msg);
@@ -818,17 +912,14 @@ static void ws_svr_free(nw_ws_svr *svr)
     free(svr);
 }
 
-nw_ws_svr *nw_ws_svr_create(nw_ws_svr_cfg *cfg, nw_ws_svr_type *type, void *privdata)
+/*
+ * the settings, and what the nw_svr underneath is made from. with threads
+ * this runs once for the front server (with_svr false: its nw_svr is the
+ * accepting one of the hub) and once on every worker thread.
+ */
+static nw_ws_svr *ws_svr_new(nw_ws_svr_cfg *cfg, nw_ws_svr_type *type, void *privdata, bool with_svr,
+        nw_svr_cfg *raw_cfg_out, nw_svr_type *raw_type_out)
 {
-    if (type->on_message == NULL)
-        return NULL;
-    if (type->on_privdata_alloc && !type->on_privdata_free)
-        return NULL;
-    for (uint32_t i = 0; i < cfg->bind_count; ++i) {
-        if (cfg->bind_arr[i].sock_type != SOCK_STREAM)
-            return NULL;
-    }
-
     nw_ws_svr *svr = malloc(sizeof(nw_ws_svr));
     if (svr == NULL)
         return NULL;
@@ -872,26 +963,120 @@ nw_ws_svr *nw_ws_svr_create(nw_ws_svr_cfg *cfg, nw_ws_svr_type *type, void *priv
     raw_type.on_privdata_alloc = on_privdata_alloc;
     raw_type.on_privdata_free = on_privdata_free;
 
-    svr->raw_svr = nw_svr_create(&raw_cfg, &raw_type, svr);
-    if (svr->raw_svr == NULL) {
-        ws_svr_free(svr);
-        return NULL;
+    if (with_svr) {
+        svr->raw_svr = nw_svr_create(&raw_cfg, &raw_type, svr);
+        if (svr->raw_svr == NULL) {
+            ws_svr_free(svr);
+            return NULL;
+        }
     }
-
+    if (raw_cfg_out)
+        *raw_cfg_out = raw_cfg;
+    if (raw_type_out)
+        *raw_type_out = raw_type;
     return svr;
 }
 
+/*
+ * with threads. the hub calls these on each worker thread.
+ */
+
+/* a complete nw_ws_svr for this thread; the hub puts the connections into
+ * its nw_svr */
+static nw_svr *worker_svr_create(nw_hub *hub, uint32_t index)
+{
+    nw_ws_svr *front = hub->privdata;
+    nw_ws_svr *svr = ws_svr_new(front->creating_cfg, &front->type, front->privdata, true, NULL, NULL);
+    if (svr == NULL)
+        return NULL;
+    svr->hub = hub;
+    svr->front = front;
+    return svr->raw_svr;
+}
+
+static void worker_svr_release(nw_hub *hub, uint32_t index, nw_svr *raw_svr)
+{
+    ws_svr_free(raw_svr->privdata);
+}
+
+static int on_thread_start(nw_hub *hub, uint32_t index)
+{
+    nw_ws_svr *svr = nw_hub_svr(hub)->privdata;
+    return svr->type.on_thread_start(svr, index);
+}
+
+static void on_thread_stop(nw_hub *hub, uint32_t index)
+{
+    nw_ws_svr *svr = nw_hub_svr(hub)->privdata;
+    svr->type.on_thread_stop(svr, index);
+}
+
+nw_ws_svr *nw_ws_svr_create(nw_ws_svr_cfg *cfg, nw_ws_svr_type *type, void *privdata)
+{
+    if (type->on_message == NULL)
+        return NULL;
+    if (type->on_privdata_alloc && !type->on_privdata_free)
+        return NULL;
+    for (uint32_t i = 0; i < cfg->bind_count; ++i) {
+        if (cfg->bind_arr[i].sock_type != SOCK_STREAM)
+            return NULL;
+    }
+    if (cfg->thread_count == 0)
+        return ws_svr_new(cfg, type, privdata, true, NULL, NULL);
+
+    /* the front server: it has the hub, whose accepting nw_svr stands in
+     * for raw_svr. the workers each make their own from the same cfg */
+    nw_hub_cfg hub_cfg;
+    nw_hub_type hub_type;
+    memset(&hub_cfg, 0, sizeof(hub_cfg));
+    memset(&hub_type, 0, sizeof(hub_type));
+    nw_ws_svr *svr = ws_svr_new(cfg, type, privdata, false, &hub_cfg.svr, &hub_type.svr);
+    if (svr == NULL)
+        return NULL;
+    hub_cfg.thread_count = cfg->thread_count;
+    hub_cfg.queue_limit = cfg->queue_limit;
+    hub_type.svr_create = worker_svr_create;
+    hub_type.svr_release = worker_svr_release;
+    if (type->on_thread_start)
+        hub_type.on_thread_start = on_thread_start;
+    if (type->on_thread_stop)
+        hub_type.on_thread_stop = on_thread_stop;
+
+    svr->creating_cfg = cfg;
+    svr->hub = nw_hub_create(&hub_cfg, &hub_type, svr);
+    svr->creating_cfg = NULL;
+    if (svr->hub == NULL) {
+        ws_svr_free(svr);
+        return NULL;
+    }
+    svr->raw_svr = svr->hub->acceptor;
+    return svr;
+}
+
+/* these three are for the server nw_ws_svr_create returned, not for the
+ * one of a worker thread */
 int nw_ws_svr_start(nw_ws_svr *svr)
 {
-    return nw_svr_start(svr->raw_svr);
+    if (svr->front)
+        return -1;
+    return svr->hub ? nw_hub_start(svr->hub) : nw_svr_start(svr->raw_svr);
 }
 
 int nw_ws_svr_stop(nw_ws_svr *svr)
 {
-    return nw_svr_stop(svr->raw_svr);
+    if (svr->front)
+        return -1;
+    return svr->hub ? nw_hub_stop(svr->hub) : nw_svr_stop(svr->raw_svr);
 }
 
 void nw_ws_svr_release(nw_ws_svr *svr)
 {
+    if (svr->front)
+        return;
+    if (svr->hub) {
+        /* ends the workers, each of which frees its own server */
+        nw_hub_release(svr->hub);
+        svr->raw_svr = NULL;
+    }
     ws_svr_free(svr);
 }

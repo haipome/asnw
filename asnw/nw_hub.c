@@ -19,6 +19,7 @@ enum {
     EVENT_CLOSE,
     EVENT_SHUTDOWN,
     EVENT_BROADCAST,
+    EVENT_CALL,
     EVENT_EXIT,
 };
 
@@ -38,9 +39,11 @@ struct event {
     uint32_t bind_index;
     /* EVENT_SEND, EVENT_CLOSE, EVENT_SHUTDOWN */
     uint64_t id;
-    /* EVENT_BROADCAST */
+    /* EVENT_BROADCAST, or EVENT_CALL for all workers */
     struct shared_data *shared;
-    /* EVENT_SEND: the data. EVENT_ADD_FD: the peer address */
+    /* EVENT_CALL */
+    nw_hub_callback callback;
+    /* EVENT_SEND, EVENT_CALL: the data. EVENT_ADD_FD: the peer address */
     size_t size;
     char data[];
 };
@@ -75,6 +78,8 @@ struct nw_hub_worker {
 
 /* the worker the calling thread is, NULL for any other thread */
 static __thread struct nw_hub_worker *current;
+/* the hubs the calling thread created and accepts for */
+static __thread nw_hub *hubs_here;
 
 static void shared_unref(struct shared_data *shared)
 {
@@ -107,10 +112,10 @@ static void event_drop(struct event *event)
 /* the size a request counts for against queue_limit */
 static size_t event_cost(struct event *event)
 {
-    if (event->type == EVENT_SEND)
-        return event->size;
-    if (event->type == EVENT_BROADCAST)
+    if (event->shared)
         return event->shared->size;
+    if (event->type == EVENT_SEND || event->type == EVENT_CALL)
+        return event->size;
     return 0;
 }
 
@@ -189,6 +194,13 @@ static void worker_handle(struct nw_hub_worker *worker, struct event *event)
     case EVENT_BROADCAST:
         broadcast_here(svr, event->shared->data, event->shared->size);
         break;
+    case EVENT_CALL:
+        if (event->shared) {
+            event->callback(worker->hub, event->shared->data, event->shared->size);
+        } else {
+            event->callback(worker->hub, event->data, event->size);
+        }
+        break;
     case EVENT_EXIT:
         worker->exit = true;
         nw_loop_break();
@@ -215,6 +227,18 @@ static void worker_set_open(struct nw_hub_worker *worker, bool open)
     pthread_mutex_unlock(&worker->lock);
 }
 
+static void worker_svr_release(struct nw_hub_worker *worker)
+{
+    nw_hub *hub = worker->hub;
+    nw_svr *svr = worker->svr;
+    worker->svr = NULL;
+    if (hub->type.svr_create) {
+        hub->type.svr_release(hub, worker->index, svr);
+    } else {
+        nw_svr_release(svr);
+    }
+}
+
 /* tell nw_hub_create how the start of this worker went */
 static void worker_report(struct nw_hub_worker *worker, int state)
 {
@@ -239,7 +263,11 @@ static void *worker_main(void *arg)
      */
     nw_loop_init();
     worker->loop = nw_default_loop;
-    worker->svr = nw_svr_create(&hub->svr_cfg, &hub->type.svr, worker);
+    if (hub->type.svr_create) {
+        worker->svr = hub->type.svr_create(hub, worker->index);
+    } else {
+        worker->svr = nw_svr_create(&hub->svr_cfg, &hub->type.svr, hub->privdata);
+    }
     if (worker->svr == NULL) {
         nw_loop_release();
         worker_report(worker, WORKER_FAILED);
@@ -252,7 +280,7 @@ static void *worker_main(void *arg)
 
     if (hub->type.on_thread_start && hub->type.on_thread_start(hub, worker->index) < 0) {
         ev_async_stop(worker->loop, &worker->wakeup);
-        nw_svr_release(worker->svr);
+        worker_svr_release(worker);
         nw_loop_release();
         worker_report(worker, WORKER_FAILED);
         return NULL;
@@ -280,8 +308,7 @@ static void *worker_main(void *arg)
     }
 
     ev_async_stop(worker->loop, &worker->wakeup);
-    nw_svr_release(worker->svr);
-    worker->svr = NULL;
+    worker_svr_release(worker);
     nw_loop_release();
     return NULL;
 }
@@ -331,7 +358,7 @@ static void hub_free(nw_hub *hub)
             if (worker->thread_created)
                 pthread_join(worker->thread, NULL);
         }
-        for (uint32_t i = 0; i <= hub->thread_count; ++i) {
+        for (uint32_t i = 0; i < hub->thread_count; ++i) {
             struct nw_hub_worker *worker = &hub->workers[i];
             /* what came too late */
             struct event *event = worker_take(worker);
@@ -357,6 +384,8 @@ nw_hub *nw_hub_create(nw_hub_cfg *cfg, nw_hub_type *type, void *privdata)
     if (cfg->thread_count == 0 || cfg->thread_count > NW_HUB_MAX_THREADS)
         return NULL;
     if (cfg->svr.bind_count == 0)
+        return NULL;
+    if (type->svr_create && !type->svr_release)
         return NULL;
     for (uint32_t i = 0; i < cfg->svr.bind_count; ++i) {
         if (cfg->svr.bind_arr[i].sock_type == SOCK_DGRAM)
@@ -384,16 +413,13 @@ nw_hub *nw_hub_create(nw_hub_cfg *cfg, nw_hub_type *type, void *privdata)
     }
     memcpy(hub->svr_cfg.bind_arr, cfg->svr.bind_arr, sizeof(nw_svr_bind) * cfg->svr.bind_count);
 
-    /* one more than there are threads: the last entry stands for the hub
-     * thread, so that the privdata of every nw_svr of a hub, the accepting
-     * one included, is a nw_hub_worker (see nw_hub_of) */
-    hub->workers = calloc(cfg->thread_count + 1, sizeof(struct nw_hub_worker));
+    hub->workers = calloc(cfg->thread_count, sizeof(struct nw_hub_worker));
     if (hub->workers == NULL) {
         hub_free(hub);
         return NULL;
     }
     hub->thread_count = cfg->thread_count;
-    for (uint32_t i = 0; i <= hub->thread_count; ++i) {
+    for (uint32_t i = 0; i < hub->thread_count; ++i) {
         struct nw_hub_worker *worker = &hub->workers[i];
         worker->hub = hub;
         worker->index = i;
@@ -403,7 +429,7 @@ nw_hub *nw_hub_create(nw_hub_cfg *cfg, nw_hub_type *type, void *privdata)
     /* on this thread: a nw_svr that only accepts */
     nw_svr_type acceptor_type = hub->type.svr;
     acceptor_type.on_accept = on_accept;
-    hub->acceptor = nw_svr_create(&hub->svr_cfg, &acceptor_type, &hub->workers[hub->thread_count]);
+    hub->acceptor = nw_svr_create(&hub->svr_cfg, &acceptor_type, hub->privdata);
     if (hub->acceptor == NULL) {
         hub_free(hub);
         return NULL;
@@ -441,6 +467,8 @@ nw_hub *nw_hub_create(nw_hub_cfg *cfg, nw_hub_type *type, void *privdata)
         hub_free(hub);
         return NULL;
     }
+    hub->next = hubs_here;
+    hubs_here = hub;
     return hub;
 }
 
@@ -456,6 +484,12 @@ int nw_hub_stop(nw_hub *hub)
 
 void nw_hub_release(nw_hub *hub)
 {
+    for (nw_hub **link = &hubs_here; *link; link = &(*link)->next) {
+        if (*link == hub) {
+            *link = hub->next;
+            break;
+        }
+    }
     nw_svr_stop(hub->acceptor);
     hub_free(hub);
 }
@@ -578,11 +612,84 @@ int nw_hub_broadcast(nw_hub *hub, const void *data, size_t size)
     return ret;
 }
 
+int nw_hub_post(nw_hub *hub, uint32_t index, nw_hub_callback callback, const void *data, size_t size)
+{
+    if (index >= hub->thread_count)
+        return -1;
+    struct nw_hub_worker *worker = &hub->workers[index];
+    if (worker == current) {
+        /* a copy, as promised: the callback may do with it what it likes */
+        void *copy = NULL;
+        if (size > 0) {
+            copy = malloc(size);
+            if (copy == NULL)
+                return -1;
+            memcpy(copy, data, size);
+        }
+        callback(hub, copy, size);
+        free(copy);
+        return 0;
+    }
+
+    struct event *event = event_new(EVENT_CALL, size);
+    if (event == NULL)
+        return -1;
+    event->callback = callback;
+    if (size > 0)
+        memcpy(event->data, data, size);
+    if (worker_post(worker, event) < 0) {
+        event_drop(event);
+        return -1;
+    }
+    return 0;
+}
+
+int nw_hub_post_all(nw_hub *hub, nw_hub_callback callback, const void *data, size_t size)
+{
+    struct shared_data *shared = malloc(sizeof(struct shared_data) + size);
+    if (shared == NULL)
+        return -1;
+    /* one reference is ours until the end */
+    shared->refs = 1;
+    shared->size = size;
+    if (size > 0)
+        memcpy(shared->data, data, size);
+
+    int ret = 0;
+    for (uint32_t i = 0; i < hub->thread_count; ++i) {
+        struct nw_hub_worker *worker = &hub->workers[i];
+        if (worker == current)
+            continue;
+        struct event *event = event_new(EVENT_CALL, 0);
+        if (event == NULL) {
+            ret = -1;
+            continue;
+        }
+        __sync_add_and_fetch(&shared->refs, 1);
+        event->shared = shared;
+        event->callback = callback;
+        if (worker_post(worker, event) < 0) {
+            event_drop(event);
+            ret = -1;
+        }
+    }
+    if (current && current->hub == hub)
+        callback(hub, shared->data, shared->size);
+    shared_unref(shared);
+    return ret;
+}
+
 nw_hub *nw_hub_of(nw_ses *ses)
 {
-    nw_svr *svr = ses->svr;
-    struct nw_hub_worker *worker = svr->privdata;
-    return worker->hub;
+    /* a connection: its worker is the calling thread */
+    if (current && current->svr == ses->svr)
+        return current->hub;
+    /* a listening session: the calling thread accepts for its hub */
+    for (nw_hub *hub = hubs_here; hub; hub = hub->next) {
+        if (hub->acceptor == ses->svr)
+            return hub;
+    }
+    return NULL;
 }
 
 int nw_hub_index(nw_hub *hub)
