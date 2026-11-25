@@ -178,6 +178,13 @@ static void on_can_read(nw_ses *ses)
                     return;
                 } else {
                     ses->read_buf->wpos += ret;
+                    ses->active_time = ev_now(ses->loop);
+                }
+                if (ses->closing) {
+                    /* shutting down: read on, so that the peer's close is
+                     * seen, but nobody wants the data any more */
+                    ses->read_buf->rpos = ses->read_buf->wpos = 0;
+                    continue;
                 }
 
                 size_t size = 0;
@@ -192,6 +199,12 @@ static void on_can_read(nw_ses *ses)
                         ses->on_recv_pkg(ses, ses->read_buf->data + ses->read_buf->rpos, ret);
                         if (!ses->read_buf)
                             return;
+                        if (ses->closing) {
+                            /* the callback shut the session down: the rest
+                             * of what was read goes the same way */
+                            ses->read_buf->rpos = ses->read_buf->wpos = 0;
+                            break;
+                        }
                         ses->read_buf->rpos += ret;
                     } else {
                         nw_buf_shift(ses->read_buf);
@@ -297,18 +310,25 @@ static void on_can_read(nw_ses *ses)
                     ses->on_close(ses);
                     return;
                 }
+                ses->active_time = ev_now(ses->loop);
 
                 struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
                 if (cmsg != NULL) {
                     if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
                         int fd;
                         memcpy(&fd, CMSG_DATA(cmsg), sizeof(fd));
+                        if (ses->closing) {
+                            close(fd);
+                            continue;
+                        }
                         ses->on_recv_fd(ses, fd);
                         /* the callback may have closed this session */
                         if (!ses->read_buf)
                             return;
                     }
                 } else {
+                    if (ses->closing)
+                        continue;
                     int pkg_size = ret;
                     ret = ses->decode_pkg(ses, ses->read_buf->data, pkg_size);
                     if (ret < 0) {
@@ -367,6 +387,12 @@ static void on_can_write(nw_ses *ses)
 
     if (ses->write_buf->count == 0) {
         watch_read(ses);
+        /* everything is out: a session that is shutting down can tell the
+         * peer that nothing more will come */
+        if (ses->closing && !ses->write_shut) {
+            shutdown(ses->sockfd, SHUT_WR);
+            ses->write_shut = true;
+        }
     }
 }
 
@@ -518,7 +544,7 @@ int nw_ses_stop(nw_ses *ses)
 
 int nw_ses_send(nw_ses *ses, const void *data, size_t size)
 {
-    if (ses->sockfd < 0) {
+    if (ses->sockfd < 0 || ses->closing) {
         return -1;
     }
 
@@ -635,10 +661,25 @@ int nw_ses_init(nw_ses *ses, struct ev_loop *loop, nw_buf_pool *pool, uint32_t b
     return 0;
 }
 
+void nw_ses_shutdown(nw_ses *ses)
+{
+    if (ses->sockfd < 0 || ses->closing)
+        return;
+    ses->closing = true;
+    if (ses->write_buf->count == 0) {
+        shutdown(ses->sockfd, SHUT_WR);
+        ses->write_shut = true;
+    }
+}
+
 int nw_ses_close(nw_ses *ses)
 {
     watch_stop(ses);
     ses->id = 0;
+    ses->closing = false;
+    ses->write_shut = false;
+    ses->deadline = 0;
+    ses->idle_mark = 0;
     if (ses->sockfd >= 0) {
         close(ses->sockfd);
         ses->sockfd = -1;
