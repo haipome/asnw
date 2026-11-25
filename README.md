@@ -2,7 +2,7 @@
 
 A small asynchronous network library for Linux, written in C on top of [libev](http://software.schmorp.de/pkg/libev.html).
 
-You describe a server or a client with a config struct and a handful of callbacks; asnw does the sockets, buffering, message framing, reconnecting and timers. One API covers five transports: TCP, UDP, and unix stream / datagram / seqpacket sockets (including file descriptor passing).
+You describe a server or a client with a config struct and a handful of callbacks; asnw does the sockets, buffering, message framing, reconnecting and timers. One API covers five transports: TCP, UDP, and unix stream / datagram / seqpacket sockets (including file descriptor passing). An HTTP/1.1 server is included.
 
 About 3,000 lines, no dependency other than libev, single threaded by design.
 
@@ -12,6 +12,7 @@ About 3,000 lines, no dependency other than libev, single threaded by design.
 |--------|------------|
 | `nw_svr` | Server. One instance can listen on several addresses of different types at once. |
 | `nw_clt` | Client. Keeps a connection to one address and reconnects automatically. |
+| `nw_http` | HTTP/1.0 and 1.1 server on top of `nw_svr`, with zero copy request parsing. |
 | `nw_timer` | Call a function after an interval, once or repeatedly. |
 | `nw_state` | Table of pending states that expire, for request tracking with timeouts. |
 | `nw_job` | Thread pool. Work runs on worker threads, results come back on the loop thread. |
@@ -86,6 +87,64 @@ int main(void)
 
 A client is built the same way from `nw_clt_cfg` and `nw_clt_type`, then `nw_clt_start`. See `test/test_clt.c`.
 
+## An HTTP server
+
+`nw_http` turns the same machinery into an HTTP server: you get a parsed request, you give back a response.
+
+```c
+# include <string.h>
+# include "nw_http.h"
+
+static void on_request(nw_ses *ses, nw_http_request *req)
+{
+    if (strcmp(req->method.s, "GET") == 0 && strcmp(req->path.s, "/") == 0) {
+        nw_http_reply_text(ses, 200, "text/plain", "hello\n", 6);
+        return;
+    }
+    if (strcmp(req->path.s, "/echo") == 0) {
+        nw_http_str *type = nw_http_get_header(req, "Content-Type");
+        nw_http_response rsp;
+        memset(&rsp, 0, sizeof(rsp));
+        rsp.status = 200;
+        nw_http_add_header(&rsp, "Content-Type", type ? type->s : "application/octet-stream");
+        rsp.body = req->body;
+        rsp.body_size = req->body_size;
+        nw_http_reply(ses, &rsp);
+        return;
+    }
+    nw_http_reply_text(ses, 404, "text/plain", "not found\n", 10);
+}
+
+int main(void)
+{
+    nw_svr_bind bind;
+    if (nw_sock_cfg_parse("tcp@127.0.0.1:8080", &bind.addr, &bind.sock_type) < 0)
+        return 1;
+
+    nw_http_svr_cfg cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.bind_count = 1;
+    cfg.bind_arr = &bind;
+
+    nw_http_svr_type type;
+    memset(&type, 0, sizeof(type));
+    type.on_request = on_request;
+
+    nw_http_svr *svr = nw_http_svr_create(&cfg, &type, NULL);
+    if (svr == NULL || nw_http_svr_start(svr) < 0)
+        return 1;
+
+    nw_loop_run();
+    return 0;
+}
+```
+
+- **Zero copy reads.** The request is parsed in place: method, path, query and every header name and value are C strings pointing into the connection's read buffer. Nothing is allocated or copied, which also means the request is only valid inside `on_request`.
+- **Answering later.** Keep `ses->id` and call `nw_http_reply_id(svr, id, &rsp)` when the result is ready, for instance from a `nw_job` callback. If the client has left, nothing happens.
+- **Supported:** HTTP/1.0 and 1.1, keep-alive, `Content-Length` and chunked request bodies, `Expect: 100-continue`, `HEAD`, idle and slow-request timeouts.
+- **Not supported:** TLS, HTTP/2, WebSocket, streamed responses, pipelining behind a request that is answered later. A request has to fit in `max_request_size` (64K by default).
+- **Strict.** Requests that are malformed or ambiguous about where they end are answered with 400 and the connection is closed. See the list at the top of `nw_http.h`.
+
 ## Addresses
 
 Addresses are written `protocol@address` and parsed with `nw_sock_cfg_parse`:
@@ -124,6 +183,7 @@ Built into `build/debug/test/`, `build/debug/wrapper/` and `build/debug/c1000k/`
 | Program | What it shows |
 |---------|---------------|
 | `test/echo_server` | Echo server on any number of addresses: `echo_server 'tcp@127.0.0.1:1234' 'stream@/tmp/echo.sock'` |
+| `test/http_server` | HTTP server, try it with curl: `http_server 'tcp@127.0.0.1:8080'` |
 | `test/test_clt` | Client that pings a server once a second: `test_clt 'tcp@127.0.0.1:1234'` |
 | `test/listener_worker` | One process accepts and hands each connection to one of N worker processes by passing its fd: `listener_worker 'tcp@127.0.0.1:1234' 10` |
 | `test/test_timer`, `test/test_state` | Timer and state table |

@@ -2,7 +2,7 @@
 
 依赖（Ubuntu/Debian）：
 
-    sudo apt-get install build-essential libev-dev valgrind cppcheck
+    sudo apt-get install build-essential libev-dev valgrind cppcheck curl
 
 常用命令（在仓库根目录）：
 
@@ -45,4 +45,7 @@
 | t_accept_emfile | fd 耗尽时拒绝连接而不空转，恢复后正常 |
 | t_sigpipe | 对端已关闭时发送不触发 SIGPIPE |
 | t_udp_clt_peer、t_unix_dgram_addrlen | 数据报 client 不被第三方改写目标；server 回包地址正确；残包丢弃 |
+| t_http_parse | 请求解析：原地切分、各类非法请求对应的状态码、截断与三十万次变异输入下不越界 |
+| t_http_svr | HTTP 服务端：keep-alive、分段到达、chunked、HEAD、100-continue、按 id 异步回包、拒绝与超时、连接的各种结束方式 |
+| t_http_curl | 用 curl 做互通测试；没装 curl 时自动跳过 |
 | t_rpc、t_rpc_decode、t_rpc_failover | ut_rpc 请求/应答、心跳保活；长度与 crc 校验；首个地址不可用时切换到下一个 |
