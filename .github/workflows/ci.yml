@@ -5,7 +5,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y libev-dev valgrind cppcheck curl
+      - run: sudo apt-get update && sudo apt-get install -y libev-dev valgrind cppcheck curl python3-pip
+      # for the websocket interop test, which is skipped without it
+      - run: python3 -m pip install --break-system-packages websockets || true
       - run: make -j4
       - run: make check
       - run: make check-asan
