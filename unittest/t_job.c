@@ -1,0 +1,75 @@
+/* nw_job: jobs run on workers, results come back on the loop thread */
+# include "common.h"
+
+# define JOBS 500
+
+static pthread_t main_thread;
+static int finish_count;
+static int cleanup_count;
+static long sum;
+
+static void *on_init(void)
+{
+    return malloc(16);
+}
+
+static void on_job(nw_job_entry *entry, void *privdata)
+{
+    CHECK(privdata != NULL);
+    CHECK(!pthread_equal(pthread_self(), main_thread));
+    long n = (long)entry->request;
+    entry->reply = (void *)(n * n);
+}
+
+static void on_finish(nw_job_entry *entry)
+{
+    CHECK(pthread_equal(pthread_self(), main_thread));
+    long n = (long)entry->request;
+    CHECK_EQ((long)entry->reply, n * n);
+    CHECK_EQ(entry->id, n + 1);
+    sum += (long)entry->reply;
+    finish_count++;
+}
+
+static void on_cleanup(nw_job_entry *entry)
+{
+    if (++cleanup_count == JOBS)
+        nw_loop_break();
+}
+
+static void on_release(void *privdata)
+{
+    free(privdata);
+}
+
+int main(void)
+{
+    main_thread = pthread_self();
+
+    nw_job_type type;
+    memset(&type, 0, sizeof(type));
+    CHECK(nw_job_create(&type, 4) == NULL);         /* on_job is required */
+    type.on_job = on_job;
+    type.on_init = on_init;
+    CHECK(nw_job_create(&type, 4) == NULL);         /* on_init needs on_release */
+    type.on_release = on_release;
+    type.on_finish = on_finish;
+    type.on_cleanup = on_cleanup;
+
+    nw_job *job = nw_job_create(&type, 4);
+    CHECK(job != NULL);
+
+    long expect = 0;
+    for (long i = 0; i < JOBS; ++i) {
+        CHECK_EQ(nw_job_add(job, i + 1, (void *)i), 0);
+        expect += i * i;
+    }
+
+    ut_run_for(10.0);
+    CHECK_EQ(finish_count, JOBS);
+    CHECK_EQ(cleanup_count, JOBS);
+    CHECK_EQ(sum, expect);
+
+    /* nw_job_release is exercised in kb_job_release_leak.c */
+    return 0;
+}
