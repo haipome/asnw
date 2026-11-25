@@ -64,6 +64,7 @@
 | t_ws_svr | WebSocket 服务端：握手与各种拒绝、各长度档的消息、分片、控制帧、协议违规、双向关闭、广播、按 id 推送、ping 与空闲超时、变异帧 |
 | t_ws_interop | 用 Python websockets 库做互通测试；没装时自动跳过 |
 | t_rpc、t_rpc_decode、t_rpc_failover | ut_rpc 请求/应答、心跳保活；长度与 crc 校验；首个地址不可用时切换到下一个 |
+| t_crc32 | ut_crc32：一次 8 字节的查表实现与逐位计算的标准 CRC-32 一致，覆盖各种长度、各种对齐和 1M 的包 |
 
 ## 覆盖率与已知的测试缺口
 
