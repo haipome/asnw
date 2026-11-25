@@ -84,8 +84,7 @@ int rpc_decode(nw_ses *ses, void *data, size_t max);
  * ext_size, body and body_size (memset the rpc_pkg to 0 first); magic and
  * crc32 are filled in. pkg is not modified, ext and body are copied.
  * return 0 on success, -1 if the packet is bigger than RPC_MAX_PKG_SIZE or
- * nw_ses_send failed (see there). loop thread only: it assembles the
- * packet in a static buffer.
+ * nw_ses_send failed (see there). call it on the thread ses belongs to.
  */
 int rpc_send(nw_ses *ses, rpc_pkg *pkg);
 

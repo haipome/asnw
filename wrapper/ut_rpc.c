@@ -55,17 +55,20 @@ int rpc_decode(nw_ses *ses, void *data, size_t max)
 
 int rpc_send(nw_ses *ses, rpc_pkg *pkg)
 {
-    static void *send_buf;
-    if (send_buf == NULL) {
-        send_buf = malloc(RPC_MAX_PKG_SIZE);
-        assert(send_buf != NULL);
-    }
-
     if (pkg->body_size > RPC_MAX_PKG_SIZE)
         return -1;
     uint32_t pkg_size = RPC_PKG_HEAD_SIZE + pkg->ext_size + pkg->body_size;
     if (pkg_size > RPC_MAX_PKG_SIZE)
         return -1;
+
+    /* the packet is put together on the stack, a big one on the heap */
+    char small_buf[4096];
+    void *send_buf = small_buf;
+    if (pkg_size > sizeof(small_buf)) {
+        send_buf = malloc(pkg_size);
+        if (send_buf == NULL)
+            return -1;
+    }
 
     memcpy(send_buf, pkg, RPC_PKG_HEAD_SIZE);
     if (pkg->ext_size)
@@ -86,7 +89,10 @@ int rpc_send(nw_ses *ses, rpc_pkg *pkg)
     pkg->crc32 = 0;
     pkg->crc32 = htole32(generate_crc32(send_buf, pkg_size));
 
-    return nw_ses_send(ses, send_buf, pkg_size);
+    int ret = nw_ses_send(ses, send_buf, pkg_size);
+    if (send_buf != small_buf)
+        free(send_buf);
+    return ret;
 }
 
 double rpc_monotonic_time(void)

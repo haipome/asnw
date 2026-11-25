@@ -5,7 +5,7 @@
 #   make check            run unit tests (debug build)
 #   make check-asan       same under AddressSanitizer + UBSan, plus the
 #                         reproducers for open bugs (unittest/kb_*.c), if any
-#   make check-tsan       thread pool test under ThreadSanitizer
+#   make check-tsan       unit tests under ThreadSanitizer
 #   make check-valgrind   unit tests under valgrind memcheck
 #   make coverage         run the tests in a coverage build, print line
 #                         coverage per source file
@@ -75,7 +75,7 @@ check-asan:
 	@$(MAKE) --no-print-directory VARIANT=asan check
 
 check-tsan:
-	@$(MAKE) --no-print-directory VARIANT=tsan check T=t_job
+	@$(MAKE) --no-print-directory VARIANT=tsan check
 
 check-valgrind: tests
 	@unittest/run.sh $(B) valgrind $(T)

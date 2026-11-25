@@ -10,7 +10,7 @@
     make                  # 库 + wrapper + 示例 + 单测，输出到 build/debug
     make check            # 运行单测
     make check-asan       # ASan + UBSan 下运行，并运行已知缺陷复现用例 kb_*
-    make check-tsan       # TSan 下运行线程池测试
+    make check-tsan       # TSan 下运行全部单测
     make check-valgrind   # valgrind memcheck
     make coverage         # 覆盖率构建下跑测试，按文件打印行覆盖率
     make lint             # gcc -Wextra + cppcheck
@@ -46,6 +46,7 @@
 | t_svr_get_clt | 按 id 找回连接；连接关闭、内存被新连接复用后旧 id 查不到 |
 | t_svr_timeout | 空闲超时（全局与单连接）、截止时间、on_timeout 回调、有序关闭时最后的数据不丢 |
 | t_svr_close_callback | 关闭回调里发送、重复关闭、关闭其他连接（连锁）都只触发一次回调；遍历时任意连接被关闭都安全 |
+| t_threads | 4 个线程各自一个 loop，同时跑 server、client、timer、state、job、rpc，互不干扰（要在 TSan 下跑才有意义） |
 | t_svr_release | 空闲、带活动连接、多地址 server 的 release；bind 不删除普通文件 |
 | t_accept_emfile | fd 耗尽时拒绝连接而不空转，恢复后正常 |
 | t_sigpipe | 对端已关闭时发送不触发 SIGPIPE |
@@ -72,7 +73,8 @@
 
 这些在头文件里都有说明，集中列一下：
 
-- 所有回调都在调用 `nw_loop_run` 的线程上执行；只有 `nw_job` 的 `on_job` 在工作线程上。
+- 每个线程一个 loop，对象属于创建它的线程：回调在该线程的 `nw_loop_run` 里执行，也只有该线程可以对它调用函数。库里没有锁。只有 `nw_job` 的 `on_job` 在工作线程上。
+- 库里新增全局或静态变量时，要么 `__thread`，要么只读，要么加锁（目前唯一加锁的是 EMFILE 备用 fd），并让 `t_threads` 覆盖到。
 - `decode_pkg` 里不能发送、不能关闭连接。
 - 传给回调的数据（消息、HTTP 请求、WebSocket 消息）只在回调期间有效。
 - 跨异步保存 `ses->id` 而不是 `nw_ses *`，回来时用 `nw_svr_get_clt` 取。

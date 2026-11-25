@@ -15,7 +15,7 @@
 
 char *nw_sock_human_addr(nw_addr_t *addr)
 {
-    static char str[NW_HUMAN_ADDR_SIZE];
+    static __thread char str[NW_HUMAN_ADDR_SIZE];
     char ip[INET6_ADDRSTRLEN];
 
     switch (addr->family) {
@@ -64,7 +64,7 @@ char *nw_sock_human_addr_s(nw_addr_t *addr, char *dest)
 
 char *nw_sock_ip(nw_addr_t *addr)
 {
-    static char ip[INET6_ADDRSTRLEN];
+    static __thread char ip[INET6_ADDRSTRLEN];
     switch (addr->family) {
     case AF_INET:
         inet_ntop(addr->family, &addr->in.sin_addr, ip, sizeof(ip));

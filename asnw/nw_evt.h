@@ -9,24 +9,43 @@
 # include "ev.h"
 
 /*
- * asnw runs on one global libev loop. everything in the library - servers,
- * clients, timers, states, job results - is driven by it and runs on the
- * thread that calls nw_loop_run. the library is not thread safe.
+ * asnw runs on one libev loop per thread. everything created on a thread -
+ * servers, clients, timers, states, job results - is driven by the loop of
+ * that thread and runs on it, inside nw_loop_run.
+ *
+ * a program that never starts a thread has one loop and need not care.
+ *
+ * several threads can each run a loop of their own, side by side: nothing
+ * in the library is shared between them. but an object belongs to the
+ * thread that created it, and so do its connections: only that thread may
+ * call a function on them (send, close, release ...), and its callbacks
+ * run there. no function may be called on another thread's object, there
+ * is no locking. to hand something to another thread, use a queue of your
+ * own with an ev_async watcher on the loop of the receiver. the one
+ * exception is the on_job callback of nw_job, see there.
  */
 
-/* the loop instance, valid after nw_loop_init. use it to add your own
- * libev watchers to the same loop */
-extern struct ev_loop *nw_default_loop;
+/* the loop of the calling thread, valid after nw_loop_init. use it to add
+ * your own libev watchers to the same loop */
+extern __thread struct ev_loop *nw_default_loop;
 
-/* create the loop. calling it again is a no-op. nw_svr_create, nw_clt_create,
- * nw_timer_set, nw_state_create and nw_job_create call it for you */
+/* create the loop of the calling thread. calling it again is a no-op.
+ * nw_svr_create, nw_clt_create, nw_timer_set, nw_state_create and
+ * nw_job_create call it for you */
 void nw_loop_init(void);
+
+/* destroy the loop of the calling thread. a thread other than the main one
+ * calls this before it exits, after it has released everything it created,
+ * or the loop is leaked. afterwards the thread can start over */
+void nw_loop_release(void);
 
 /* run the loop. returns after nw_loop_break, or when nothing is left to
  * wait for (no listening server, connection or active timer) */
 void nw_loop_run(void);
 
-/* make nw_loop_run return once the current callback is done */
+/* make nw_loop_run return once the current callback is done. like the
+ * other functions here it acts on the loop of the calling thread: to stop
+ * another thread, tell that thread */
 void nw_loop_break(void);
 
 /* make nw_loop_run return after waittime seconds, e.g. to let pending data

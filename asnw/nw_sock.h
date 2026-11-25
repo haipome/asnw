@@ -40,8 +40,8 @@ typedef struct nw_addr_t {
  *   ipv4: 127.0.0.1:3333
  *   ipv6: [::1]:3333
  *   unix: unix:/tmp/test.sock
- * returns a static buffer that the next call overwrites, so don't use it
- * twice in one printf and don't keep the pointer
+ * returns a static buffer (one per thread) that the next call overwrites,
+ * so don't use it twice in one printf and don't keep the pointer
  */
 char *nw_sock_human_addr(nw_addr_t *addr);
 

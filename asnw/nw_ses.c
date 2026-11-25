@@ -8,6 +8,7 @@
 # include <errno.h>
 # include <fcntl.h>
 # include <unistd.h>
+# include <pthread.h>
 
 # include "nw_ses.h"
 
@@ -15,8 +16,10 @@ static void libev_on_read_write_evt(struct ev_loop *loop, ev_io *watcher, int ev
 static void libev_on_accept_evt(struct ev_loop *loop, ev_io *watcher, int events);
 static void libev_on_connect_evt(struct ev_loop *loop, ev_io *watcher, int events);
 
-/* spare fd, see shed_connection() */
+/* spare fd, see shed_connection(). one for the process, shared by the
+ * threads */
 static int idle_fd = -1;
+static pthread_mutex_t idle_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void watch_stop(nw_ses *ses)
 {
@@ -130,18 +133,20 @@ static bool dgram_from_peer(nw_addr_t *peer, nw_addr_t *from)
  */
 static int shed_connection(nw_ses *ses)
 {
-    if (idle_fd < 0)
-        return -1;
-    close(idle_fd);
     int ret = -1;
-    int sockfd = accept(ses->sockfd, NULL, NULL);
-    if (sockfd >= 0) {
-        close(sockfd);
-        ret = 1;
-    } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        ret = 0;
+    pthread_mutex_lock(&idle_lock);
+    if (idle_fd >= 0) {
+        close(idle_fd);
+        int sockfd = accept(ses->sockfd, NULL, NULL);
+        if (sockfd >= 0) {
+            close(sockfd);
+            ret = 1;
+        } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            ret = 0;
+        }
+        idle_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
     }
-    idle_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    pthread_mutex_unlock(&idle_lock);
     return ret;
 }
 
@@ -169,7 +174,7 @@ static void on_can_read(nw_ses *ses)
                         break;
                     } else {
                         char errmsg[100];
-                        snprintf(errmsg, sizeof(errmsg), "read error: %s", strerror(errno));
+                        snprintf(errmsg, sizeof(errmsg), "read error: %m");
                         ses->on_error(ses, errmsg);
                         return;
                     }
@@ -241,7 +246,7 @@ static void on_can_read(nw_ses *ses)
                         break;
                     } else {
                         char errmsg[100];
-                        snprintf(errmsg, sizeof(errmsg), "recvfrom error: %s", strerror(errno));
+                        snprintf(errmsg, sizeof(errmsg), "recvfrom error: %m");
                         ses->on_error(ses, errmsg);
                         return;
                     }
@@ -302,7 +307,7 @@ static void on_can_read(nw_ses *ses)
                         break;
                     } else {
                         char errmsg[100];
-                        snprintf(errmsg, sizeof(errmsg), "recvmsg error: %s", strerror(errno));
+                        snprintf(errmsg, sizeof(errmsg), "recvmsg error: %m");
                         ses->on_error(ses, errmsg);
                         return;
                     }
@@ -377,7 +382,7 @@ static void on_can_write(nw_ses *ses)
                 break;
             } else {
                 char errmsg[100];
-                snprintf(errmsg, sizeof(errmsg), "write error: %s", strerror(errno));
+                snprintf(errmsg, sizeof(errmsg), "write error: %m");
                 ses->on_error(ses, errmsg);
                 return;
             }
@@ -419,14 +424,14 @@ static void on_can_accept(nw_ses *ses)
                 if (shed == 0)
                     break;
                 char errmsg[100];
-                snprintf(errmsg, sizeof(errmsg), "accept error: %s%s", strerror(accept_errno), \
-                        shed > 0 ? ", connection rejected" : "");
+                errno = accept_errno;
+                snprintf(errmsg, sizeof(errmsg), "accept error: %m%s", shed > 0 ? ", connection rejected" : "");
                 ses->on_error(ses, errmsg);
                 if (shed < 0 || ses->sockfd < 0)
                     return;
             } else {
                 char errmsg[100];
-                snprintf(errmsg, sizeof(errmsg), "accept error: %s", strerror(errno));
+                snprintf(errmsg, sizeof(errmsg), "accept error: %m");
                 ses->on_error(ses, errmsg);
                 return;
             }
@@ -503,8 +508,10 @@ int nw_ses_listen(nw_ses *ses, int backlog)
     int ret = listen(ses->sockfd, backlog);
     if (ret < 0)
         return -1;
+    pthread_mutex_lock(&idle_lock);
     if (idle_fd < 0)
         idle_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+    pthread_mutex_unlock(&idle_lock);
     watch_accept(ses);
     return 0;
 }
@@ -573,7 +580,7 @@ int nw_ses_send(nw_ses *ses, const void *data, size_t size)
                         watch_read_write(ses);
                     } else {
                         char errmsg[100];
-                        snprintf(errmsg, sizeof(errmsg), "write error: %s", strerror(errno));
+                        snprintf(errmsg, sizeof(errmsg), "write error: %m");
                         ses->on_error(ses, errmsg);
                         return -1;
                     }
@@ -585,7 +592,7 @@ int nw_ses_send(nw_ses *ses, const void *data, size_t size)
                 int ret = sendto(ses->sockfd, data, size, MSG_NOSIGNAL, NW_SOCKADDR(&ses->peer_addr), ses->peer_addr.addrlen);
                 if (ret < 0) {
                     char errmsg[100];
-                    snprintf(errmsg, sizeof(errmsg), "sendto error: %s", strerror(errno));
+                    snprintf(errmsg, sizeof(errmsg), "sendto error: %m");
                     ses->on_error(ses, errmsg);
                     return -1;
                 }
@@ -603,7 +610,7 @@ int nw_ses_send(nw_ses *ses, const void *data, size_t size)
                         watch_read_write(ses);
                     } else {
                         char errmsg[100];
-                        snprintf(errmsg, sizeof(errmsg), "sendmsg error: %s", strerror(errno));
+                        snprintf(errmsg, sizeof(errmsg), "sendmsg error: %m");
                         ses->on_error(ses, errmsg);
                         return -1;
                     }

@@ -7,13 +7,16 @@
 # include <unistd.h>
 # include <limits.h>
 # include <libgen.h>
+# include <pthread.h>
 
 # include "nw_evt.h"
 
-struct ev_loop *nw_default_loop;
-static int initialized;
-static int running;
-static ev_timer break_timer;
+/* one loop per thread */
+__thread struct ev_loop *nw_default_loop;
+static __thread int initialized;
+static __thread int running;
+static __thread ev_timer break_timer;
+static pthread_once_t once = PTHREAD_ONCE_INIT;
 
 static void fatal_error(const char *msg)
 {
@@ -27,6 +30,12 @@ static void fatal_error(const char *msg)
     closelog();
 }
 
+/* process wide */
+static void init_once(void)
+{
+    ev_set_syserr_cb(fatal_error);
+}
+
 void nw_loop_init(void)
 {
     if (initialized)
@@ -36,9 +45,23 @@ void nw_loop_init(void)
     flag |= EVFLAG_AUTO;
     flag |= EVFLAG_NOENV;
     flag |= EVFLAG_FORKCHECK;
+    pthread_once(&once, init_once);
     nw_default_loop = ev_loop_new(flag);
-    ev_set_syserr_cb(fatal_error);
     initialized = 1;
+}
+
+void nw_loop_release(void)
+{
+    if (!initialized)
+        return;
+    if (running)
+        return;
+
+    if (ev_is_active(&break_timer))
+        ev_timer_stop(nw_default_loop, &break_timer);
+    ev_loop_destroy(nw_default_loop);
+    nw_default_loop = NULL;
+    initialized = 0;
 }
 
 void nw_loop_run(void)

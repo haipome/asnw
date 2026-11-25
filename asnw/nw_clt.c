@@ -43,14 +43,15 @@ static void set_socket_option(nw_clt *clt, int sockfd)
     }
 }
 
-/* local address of a unix dgram client, unique per process and per start.
- * does not touch the application's rand() state */
+/* local address of a unix dgram client, unique per process and per start,
+ * whichever thread asks. does not touch the application's rand() state */
 static void generate_local_path(char *path, size_t size)
 {
     static unsigned int counter;
+    unsigned int seq = __sync_fetch_and_add(&counter, 1);
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    snprintf(path, size, "%s/asnw_dgram_%d_%u_%09ld.sock", P_tmpdir, (int)getpid(), counter++, (long)ts.tv_nsec);
+    snprintf(path, size, "%s/asnw_dgram_%d_%u_%09ld.sock", P_tmpdir, (int)getpid(), seq, (long)ts.tv_nsec);
 }
 
 static void reconnect_later(nw_clt *clt, double delay);
