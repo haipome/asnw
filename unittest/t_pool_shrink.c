@@ -8,8 +8,25 @@
 
 # define PEAK 400
 
+static int closed_in_callback;
+
+/*
+ * a callback that closes its own connection and then goes on reading the
+ * message it was given. that message lies in the read buf of the
+ * connection, which went back to the pool with the close: it must not be
+ * freed under the feet of the callback, however many bufs the pool has to
+ * spare (the address sanitizer watches).
+ */
 static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
 {
+    char copy[64];
+    CHECK(size < sizeof(copy));
+    memcpy(copy, data, size);
+    if (memcmp(data, "bye", 3) == 0) {
+        nw_svr_close_clt(ses->svr, ses);
+        CHECK(memcmp(data, copy, size) == 0);
+        closed_in_callback++;
+    }
 }
 
 int main(void)
@@ -40,15 +57,27 @@ int main(void)
         CHECK_EQ(svr->buf_pool->used, PEAK);
         CHECK_EQ(svr->clt_cache->used, PEAK);
 
-        for (int i = 0; i < PEAK; ++i)
-            close(fds[i]);
+        /* half of them are closed by the server, in the callback above,
+         * while the pool is full of bufs to spare */
+        closed_in_callback = 0;
+        for (int i = 0; i < PEAK; ++i) {
+            if (i % 2)
+                CHECK_EQ(send(fds[i], "\nbye\n", 5, 0), 5);
+            else
+                close(fds[i]);
+        }
         ut_run_for(0.2);
+        CHECK_EQ(closed_in_callback, PEAK / 2);
+        for (int i = 1; i < PEAK; i += 2)
+            close(fds[i]);
         CHECK_EQ(svr->clt_count, 0);
         CHECK_EQ(svr->buf_pool->used, 0);
         CHECK_EQ(svr->clt_cache->used, 0);
         fprintf(stderr, "after a peak of %d: %u bufs kept (%u K)\n", PEAK, svr->buf_pool->free, svr->buf_pool->free * 64);
         CHECK_EQ(svr->buf_pool->free, svr->buf_pool->keep);
-        CHECK(svr->clt_cache->free <= svr->clt_cache->keep);
+        /* the session structs are another matter: their memory is never
+         * freed while the server lives, the library reads closed sessions */
+        CHECK_EQ(svr->clt_cache->free, PEAK);
     }
 
     nw_svr_release(svr);

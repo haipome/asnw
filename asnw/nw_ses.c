@@ -752,6 +752,50 @@ int nw_ses_send_fd(nw_ses *ses, int fd)
     return sendmsg(ses->sockfd, &msg, MSG_EOR | MSG_NOSIGNAL);
 }
 
+/* bufs freed per turn of the loop: enough to follow any fall of the load,
+ * little enough not to be felt */
+# define NW_TRIM_PER_TURN 256
+
+static void on_trim_more(struct ev_loop *loop, ev_timer *timer, int events)
+{
+    /* nothing to do: it only makes the loop turn once more */
+}
+
+/* called when the callbacks of one turn of the loop are all done and it
+ * is about to wait for the next events */
+static void on_trim(struct ev_loop *loop, ev_prepare *watcher, int events)
+{
+    nw_pool_trimmer *trimmer = (nw_pool_trimmer *)watcher;
+    if (nw_buf_pool_trim(trimmer->pool, NW_TRIM_PER_TURN) > 0 && !ev_is_active(&trimmer->more)) {
+        /* more to do than one turn should: don't wait, come back right
+         * away even if nothing else happens */
+        ev_timer_init(&trimmer->more, on_trim_more, 0, 0);
+        ev_timer_start(loop, &trimmer->more);
+    }
+}
+
+void nw_pool_trimmer_start(nw_pool_trimmer *trimmer, struct ev_loop *loop, nw_buf_pool *pool)
+{
+    trimmer->loop = loop;
+    trimmer->pool = pool;
+    ev_timer_init(&trimmer->more, on_trim_more, 0, 0);
+    ev_prepare_init(&trimmer->prepare, on_trim);
+    ev_prepare_start(loop, &trimmer->prepare);
+    /* it must not keep nw_loop_run from returning when nothing else is left */
+    ev_unref(loop);
+    trimmer->started = true;
+}
+
+void nw_pool_trimmer_stop(nw_pool_trimmer *trimmer)
+{
+    if (!trimmer->started)
+        return;
+    ev_ref(trimmer->loop);
+    ev_prepare_stop(trimmer->loop, &trimmer->prepare);
+    ev_timer_stop(trimmer->loop, &trimmer->more);
+    trimmer->started = false;
+}
+
 int nw_ses_init(nw_ses *ses, struct ev_loop *loop, nw_buf_pool *pool, uint32_t buf_limit, int ses_type)
 {
     memset(ses, 0, sizeof(nw_ses));

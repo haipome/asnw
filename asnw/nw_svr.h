@@ -225,6 +225,7 @@ typedef struct nw_svr {
     nw_ses *svr_list;
     nw_svr_type type;
     nw_buf_pool *buf_pool;
+    nw_pool_trimmer trimmer;
     nw_cache *clt_cache;
     /* the current connections by id, see nw_svr_get_clt and nw_svr_next */
     nw_dict *clt_dict;

@@ -214,6 +214,8 @@ nw_clt *nw_clt_create(nw_clt_cfg *cfg, nw_clt_type *type, void *privdata)
             nw_clt_release(clt);
             return NULL;
         }
+        /* a pool of the application is trimmed by the application */
+        nw_pool_trimmer_start(&clt->trimmer, nw_default_loop, clt->buf_pool);
     }
     clt->read_mem = cfg->read_mem;
     clt->write_mem = cfg->write_mem;
@@ -314,6 +316,7 @@ void nw_clt_release(nw_clt *clt)
      * into the memory freed below */
     clt_close(clt);
     nw_ses_release(&clt->ses);
+    nw_pool_trimmer_stop(&clt->trimmer);
     if (!clt->custom_buf_pool && clt->buf_pool) {
         nw_buf_pool_release(clt->buf_pool);
     }
