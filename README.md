@@ -1,37 +1,296 @@
-# ASNW: asynchronous network
-A high performance asynchronous network programming library based on libev and in C.
+# asnw
 
-Network including the following modules:
+A small asynchronous network library for Linux, written in C on top of [libev](http://software.schmorp.de/pkg/libev.html).
 
-- `nw_buf`   : buf manager
-- `nw_evt`   : main loop
-- `nw_sock`  : socket releated
-- `nw_ses`   : network session manager
-- `nw_timer` : timer, call a function after specify time, repeat or not repeat
-- `nw_svr`   : server implement, one server can bind multi address in different sock type
-- `nw_clt`   : client implement, auto reconnect
-- `nw_state` : state machine with timeout
-- `nw_job`   : thread pool
+You describe a server or a client with a config struct and a handful of callbacks; asnw does the sockets, buffering, message framing, reconnecting and timers. One API covers five transports: TCP, UDP, and unix stream / datagram / seqpacket sockets (including file descriptor passing). An HTTP/1.1 server and a WebSocket server are included.
 
-### example
-- `echo_server` : a single process server
+The core is about 5,000 lines and the two protocol servers another 2,800. No dependency other than libev. One event loop per thread and no locks in the callbacks; `nw_hub` runs a server on several threads.
 
-see test/echo_server.c
+The headers in `asnw/` are the reference: every struct field, callback and function is documented there, and each header starts with an overview of its module.
+
+## Modules
+
+The core:
+
+| Module | What it is |
+|--------|------------|
+| `nw_svr` | Server. One instance can listen on several addresses of different types at once. Finds connections by id, walks them, times them out and closes them in an orderly way. |
+| `nw_clt` | Client. Keeps a connection to one address and reconnects automatically. |
+| `nw_hub` | A `nw_svr` on several threads: one thread accepts, each connection lives on one of N worker threads. Same callbacks, no locks, and sending by id across threads. |
+| `nw_timer` | Call a function after an interval, once or repeatedly. |
+| `nw_state` | Table of pending states that expire, for request tracking with timeouts. |
+| `nw_job` | Thread pool. Work runs on worker threads, results come back on the loop thread. |
+| `nw_dict` | Hash table from integer keys to pointers. Used by `nw_svr` and `nw_state`, usable on its own. |
+| `nw_buf` | Buffer pool, buffer list and a fixed size object cache. |
+| `nw_sock` | Address parsing and socket option helpers. |
+| `nw_evt` | The event loop (`nw_loop_run`, `nw_loop_break`). |
+| `nw_ses` | A session: one socket and its buffers. Used by `nw_svr` and `nw_clt`; you receive it in callbacks. |
+
+Protocols built on the core, which knows nothing about them:
+
+| Module | What it is |
+|--------|------------|
+| `nw_http` | HTTP/1.0 and 1.1 server, with zero copy request parsing. On one thread, or on several with `thread_count`. |
+| `nw_ws` | WebSocket server (RFC 6455): messages, broadcast, pings. On one thread, or on several with `thread_count`. |
+
+## Build
 
 ```
-./echo_server 'tcp@127.0.0.1:1234' 'stream@/tmp/echo_stream.sock'
+sudo apt-get install build-essential libev-dev
+make            # library, wrapper, examples and tests into build/debug
+make check      # run the tests
 ```
 
-- `listener_worker`: one process listen, multi process process connection
+The library is `build/debug/libasnw.a` (`make VARIANT=release` for an optimized one in `build/release`). To use it, add `asnw/` to the include path and link with `-lasnw -lev -lpthread`.
 
-see test/listener_worker.c
+`asnw/makefile` also still builds `asnw/libasnw.a` on its own.
+
+## A server in 40 lines
+
+A line based echo server listening on TCP and on a unix socket:
+
+```c
+# include <stdio.h>
+# include <string.h>
+# include "nw_svr.h"
+
+/* where does a message end? return its size, 0 if incomplete, < 0 if broken */
+static int decode_pkg(nw_ses *ses, void *data, size_t max)
+{
+    char *end = memchr(data, '\n', max);
+    return end ? (int)(end - (char *)data) + 1 : 0;
+}
+
+/* called once per complete message */
+static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
+{
+    nw_ses_send(ses, data, size);
+}
+
+int main(void)
+{
+    nw_svr_bind bind[2];
+    if (nw_sock_cfg_parse("tcp@127.0.0.1:1234", &bind[0].addr, &bind[0].sock_type) < 0 ||
+        nw_sock_cfg_parse("stream@/tmp/echo.sock", &bind[1].addr, &bind[1].sock_type) < 0)
+        return 1;
+
+    nw_svr_cfg cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.bind_count = 2;
+    cfg.bind_arr = bind;
+    cfg.max_pkg_size = 10240;
+
+    nw_svr_type type;
+    memset(&type, 0, sizeof(type));
+    type.decode_pkg = decode_pkg;
+    type.on_recv_pkg = on_recv_pkg;
+
+    nw_svr *svr = nw_svr_create(&cfg, &type, NULL);
+    if (svr == NULL || nw_svr_start(svr) < 0)
+        return 1;
+
+    nw_loop_run();
+    return 0;
+}
+```
+
+`decode_pkg` and `on_recv_pkg` are required. The optional callbacks are `on_new_connection`, `on_connection_close`, `on_error_msg`, `on_accept`, `on_recv_fd` and `on_privdata_alloc` / `on_privdata_free` for per connection data. `nw_svr.h` documents each one.
+
+A client is built the same way from `nw_clt_cfg` and `nw_clt_type`, then `nw_clt_start`. See `test/test_clt.c`.
+
+## An HTTP server
+
+`nw_http` turns the same machinery into an HTTP server: you get a parsed request, you give back a response.
+
+```c
+# include <string.h>
+# include "nw_http.h"
+
+static void on_request(nw_ses *ses, nw_http_request *req)
+{
+    if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/") == 0) {
+        nw_http_reply_text(ses, 200, "text/plain", "hello\n", 6);
+        return;
+    }
+    if (strcmp(req->path, "/echo") == 0) {
+        const char *type = nw_http_get_header(req, "Content-Type");
+        nw_http_response rsp;
+        memset(&rsp, 0, sizeof(rsp));
+        rsp.status = 200;
+        nw_http_add_header(&rsp, "Content-Type", type ? type : "application/octet-stream");
+        rsp.body = req->body;
+        rsp.body_size = req->body_size;
+        nw_http_reply(ses, &rsp);
+        return;
+    }
+    nw_http_reply_text(ses, 404, "text/plain", "not found\n", 10);
+}
+
+int main(void)
+{
+    nw_svr_bind bind;
+    if (nw_sock_cfg_parse("tcp@127.0.0.1:8080", &bind.addr, &bind.sock_type) < 0)
+        return 1;
+
+    nw_http_svr_cfg cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.bind_count = 1;
+    cfg.bind_arr = &bind;
+
+    nw_http_svr_type type;
+    memset(&type, 0, sizeof(type));
+    type.on_request = on_request;
+
+    nw_http_svr *svr = nw_http_svr_create(&cfg, &type, NULL);
+    if (svr == NULL || nw_http_svr_start(svr) < 0)
+        return 1;
+
+    nw_loop_run();
+    return 0;
+}
+```
+
+- **Zero copy reads.** The request is parsed in place: method, path, query and every header name and value are C strings pointing into the connection's read buffer. Nothing is allocated or copied, which also means the request is only valid inside `on_request`.
+- **Answering later.** Keep `ses->id` and call `nw_http_reply_id(svr, id, &rsp)` when the result is ready, for instance from a `nw_job` callback. If the client has left, nothing happens.
+- **Several threads.** Set `thread_count` in the cfg and the server runs on a `nw_hub`: the thread that created it accepts, the connections live on that many worker threads and `on_request` runs there, for different connections at the same time. `nw_http_reply_id` works from any thread. To answer later without crossing threads, create what each worker needs (a `nw_job`, a client) in `on_thread_start`. Data shared between requests is yours to lock. 0, the default, means no threads at all.
+- **Supported:** HTTP/1.0 and 1.1, keep-alive, `Content-Length` and chunked request bodies, `Expect: 100-continue`, `HEAD`, idle and slow-request timeouts.
+- **Not supported:** TLS, HTTP/2, WebSocket, streamed responses, pipelining behind a request that is answered later. A request has to fit in `max_request_size` (64K by default).
+- **Strict.** Requests that are malformed or ambiguous about where they end are answered with 400 and the connection is closed. See the list at the top of `nw_http.h`.
+
+## A WebSocket server
+
+`nw_ws` is a WebSocket server on a port of its own. Clients upgrade with the usual handshake; after that you get whole messages and send whole messages.
+
+```c
+# include <string.h>
+# include "nw_ws.h"
+
+/* look at the upgrade request, return < 0 to refuse the client */
+static int on_upgrade(nw_ses *ses, nw_http_request *req)
+{
+    return strcmp(req->path, "/chat") == 0 ? 0 : -1;
+}
+
+static void on_open(nw_ses *ses)
+{
+    nw_ws_send_text(ses, "welcome");
+}
+
+/* data[size] is '\0', a text message is a C string */
+static void on_message(nw_ses *ses, bool binary, void *data, size_t size)
+{
+    if (binary)
+        nw_ws_close(ses, NW_WS_CLOSE_UNSUPPORTED, "text only");
+    else
+        nw_ws_broadcast_text(nw_ws_svr_of(ses), data);
+}
+
+int main(void)
+{
+    nw_svr_bind bind;
+    if (nw_sock_cfg_parse("tcp@127.0.0.1:8081", &bind.addr, &bind.sock_type) < 0)
+        return 1;
+
+    nw_ws_svr_cfg cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.bind_count = 1;
+    cfg.bind_arr = &bind;
+    cfg.buf_limit = 16;         /* a client that falls this far behind is dropped */
+    cfg.ping_interval = 20;
+
+    nw_ws_svr_type type;
+    memset(&type, 0, sizeof(type));
+    type.on_upgrade = on_upgrade;
+    type.on_open = on_open;
+    type.on_message = on_message;
+
+    nw_ws_svr *svr = nw_ws_svr_create(&cfg, &type, NULL);
+    if (svr == NULL || nw_ws_svr_start(svr) < 0)
+        return 1;
+
+    nw_loop_run();
+    return 0;
+}
+```
+
+- **Zero copy reads.** A message that comes in one frame is unmasked in place and handed over where it lies in the read buffer; only a message split into several frames is put together in a buffer of its own.
+- **Per connection data.** `on_privdata_alloc` / `on_privdata_free` give every connection a struct of yours, reached with `nw_ws_privdata(ses)`. The upgrade request is only valid in `on_upgrade`, so that is where to copy what you need from it.
+- **Pushing.** `nw_ws_broadcast_text` sends to everybody. To push to one client from outside its callbacks, keep `ses->id` and use `nw_ws_send_text_id(svr, id, ...)`.
+- **Several threads.** Set `thread_count` in the cfg and the server runs on a `nw_hub`: the thread that created it accepts, the connections live on that many worker threads and their callbacks run there. Sending and closing by id and the broadcasts work from any thread. The callbacks stay as they are if they only use per connection data; data shared between connections is yours to lock. 0, the default, means no threads at all.
+- **Keeping connections alive.** With `ping_interval` set the server pings silent clients; one that stays silent for `keep_alive_timeout` is closed.
+- **Not supported:** TLS, compression (it is declined, clients fall back), UTF-8 validation of text messages, plain HTTP on the same port. A message has to fit in `max_message_size` (64K by default).
+
+## Addresses
+
+Addresses are written `protocol@address` and parsed with `nw_sock_cfg_parse`:
+
+| Example | Transport |
+|---------|-----------|
+| `tcp@127.0.0.1:3333` | TCP |
+| `tcp@[::1]:3333` | TCP over IPv6 |
+| `udp@127.0.0.1:3333` | UDP |
+| `stream@/tmp/a.sock` | unix stream |
+| `dgram@/tmp/a.sock` | unix datagram |
+| `seqpacket@/tmp/a.sock` | unix seqpacket |
+
+The protocol name is case insensitive. Hosts are numeric addresses; there is no name resolution.
+
+## Things to know
+
+**Messages.** On stream connections `decode_pkg` finds message boundaries, and a message can be at most `max_pkg_size` bytes. On datagram and seqpacket sockets every packet is one message; a packet for which `decode_pkg` returns 0 is dropped.
+
+**Session lifetime.** A `nw_ses *` is valid until its connection closes, and the memory is reused for later connections. Across asynchronous work (a job, a state, a timer) keep `ses->id` instead of the pointer, and get the connection back with `nw_svr_get_clt(svr, id)`, which returns NULL if the client is gone; `nw_svr_send(svr, id, ...)` does both steps. Ids are never 0 and never reused.
+
+**Send buffering.** `nw_ses_send` writes directly when it can and queues the rest. `buf_limit` caps that queue in units of `max_pkg_size` buffers; the default 0 means unlimited, so set a limit on servers that face untrusted clients. Datagram sends are never queued: a full socket buffer is reported as an error.
+
+**Flow control.** Dropping a peer that falls behind is the default and often the right thing. When it is not (a proxy, a relay, a big transfer), the library hands you the facts and the switches and leaves the policy to you: `nw_ses_pending(ses)` is the number of bytes still queued for a session, `on_drain` is called when that queue has been written out, and `nw_ses_pause_read` / `nw_ses_resume_read` stop and restart the input of a session, which makes the kernel hold its sender back. Passing data from `up` to `down` without piling it up is then two lines: pause `up` when `nw_ses_pending(down)` is over your mark, resume it in `on_drain` of `down`. All of it works on the connections of `nw_http` and `nw_ws` too.
+
+**Timeouts.** `idle_timeout` in the server config (optional) drops connections that send nothing for that long. `on_timeout` lets you decide instead: left open, a silent connection times out again one period later, and `ses->active_time` tells how long it has been silent, which is all a "ping, then give up" policy needs. A single connection can be given its own timeout (`nw_svr_set_clt_idle_timeout`) or a deadline that activity does not push back (`nw_svr_set_clt_deadline`). Timeouts are accurate to about a second.
+
+**Closing.** `nw_svr_close_clt` closes at once and drops unsent data. To say something last and have it arrive, send it and call `nw_svr_shutdown_clt`. Either way `on_connection_close` is called exactly once, and by then the connection is already out of the server: it is not counted, not found by id, not visited by the iterator, and sending on it returns -1. So the callback is free to send to the other connections or close them; "tell everybody that this one left" needs no care.
+
+**Walking the connections.** `nw_svr_iter_init` / `nw_svr_next` visit every connection of a server. Connections may be closed while walking, the current one or any other.
+
+**Datagram servers.** The session passed to `on_recv_pkg` is the listening one, and `nw_ses_send` replies to the sender of the datagram being handled. Reply inside the callback, or copy `ses->peer_addr`.
+
+**Clients.** A stream client retries every `reconnect_timeout` seconds (default 1.0), which is also how long a connect attempt may take. `on_close` is called once per lost connection or failed attempt; return > 0 from it to retry at once, or call `nw_clt_close` from it to stay closed. Check `nw_clt_connected` before sending. A datagram client is usable right after `nw_clt_start` and ignores UDP packets from any address other than its server.
+
+**Several threads.** `nw_hub` takes the same config and callbacks as `nw_svr` (in `cfg.svr` and `type.svr`) plus a thread count. A connection is given to one worker thread and stays there; its callbacks run on that thread, where `ses->svr` is an ordinary `nw_svr` holding the connections of that thread, so everything above applies unchanged. Connections on different threads reach each other by id: `nw_hub_send`, `nw_hub_close`, `nw_hub_shutdown` and `nw_hub_broadcast` may be called from any thread and queue the request for the thread that owns the connection (`queue_limit` bounds what may wait for a thread that is stuck); `nw_hub_post` runs a function of yours on a given worker. What the library cannot do for you: data of your own that several connections share is now used by several threads, so lock it or keep one copy per thread, set up in `on_thread_start`. Stream and seqpacket binds only.
+
+**Threads.** Every thread has an event loop of its own: what a thread creates (servers, clients, timers ...) runs on that thread, inside its `nw_loop_run`. A program with one thread need not think about any of this. Several threads can each run their own loop side by side, as nothing is shared between them, but there is no locking: an object and its connections may only be used by the thread that created them. To pass something to another thread, use a queue of your own and an `ev_async` watcher on the receiver's `nw_default_loop`. A thread other than the main one calls `nw_loop_release` before it exits. For blocking work there is `nw_job`: the work runs on worker threads and its `on_finish` callback runs back on the loop thread.
+
+**Unix sockets.** Binding replaces a stale socket file at the path and makes the socket accessible to all local users (mode 0777).
+
+## Examples
+
+Built into `build/debug/test/`, `build/debug/wrapper/` and `build/debug/c1000k/`.
+
+| Program | What it shows |
+|---------|---------------|
+| `test/echo_server` | Echo server on any number of addresses: `echo_server 'tcp@127.0.0.1:1234' 'stream@/tmp/echo.sock'` |
+| `test/http_server` | HTTP server, try it with curl: `http_server 'tcp@127.0.0.1:8080'`. `http_server 4 'tcp@...'` runs it on 4 threads |
+| `test/hub_server` | Chat server on N threads: `hub_server 4 'tcp@127.0.0.1:1234'`, then `nc 127.0.0.1 1234` in a few terminals |
+| `test/ws_server` | WebSocket chat room: `ws_server 'tcp@127.0.0.1:8081'`, then connect from a browser console. `ws_server 4 'tcp@...'` runs it on 4 threads |
+| `test/test_clt` | Client that pings a server once a second: `test_clt 'tcp@127.0.0.1:1234'` |
+| `test/listener_worker` | One process accepts and hands each connection to one of N worker processes by passing its fd: `listener_worker 'tcp@127.0.0.1:1234' 10` |
+| `test/test_timer`, `test/test_state` | Timer and state table |
+| `test/test_*_clt` | Plain socket clients, one per transport, for poking at a server |
+| `c1000k/` | Server and client for a one million connection test |
+| `wrapper/` | `ut_rpc`, an example of a higher level wrapper built on `nw_svr` and `nw_clt`. See [wrapper/README.md](wrapper/README.md) |
+
+## Testing
 
 ```
-./listener_worker 'tcp@127.0.0.1:1234' 10
+make check            # unit tests
+make check-asan       # under AddressSanitizer and UBSan
+make check-tsan       # under ThreadSanitizer
+make check-valgrind   # under valgrind
+make coverage         # line coverage per source file
+make lint             # gcc -Wextra and cppcheck
 ```
 
-### wrapper
-Network is a very basic network programming library, but you can wrapper the basic nw_clt
-and nw_svr to be more complex.
+The tests live in `unittest/`, one executable per test.
 
-wrapper/ut_rpc is a wrapper example.
+## License
+
+MIT, see [LICENSE](LICENSE).

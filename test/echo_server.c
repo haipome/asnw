@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: example: echo server on any number of addresses
  *     History: yang@haipo.me, 2016/03/21, create
  */
 
@@ -58,7 +58,7 @@ void on_recv_fd(nw_ses *ses, int fd)
 
 void on_error_msg(nw_ses *ses, const char *msg)
 {
-    printf("error occur: %s, perr: %s\n", msg, nw_sock_human_addr(&ses->peer_addr));
+    printf("error: %s, peer: %s\n", msg, nw_sock_human_addr(&ses->peer_addr));
 }
 
 void on_timer(nw_timer *timer, void *privdata)
@@ -80,7 +80,7 @@ int main(int argc, char *argv[])
         printf("malloc fail\n");
         exit(0);
     }
-    memset(bind_arr, sizeof(nw_svr_bind) * bind_count, 0);
+    memset(bind_arr, 0, sizeof(nw_svr_bind) * bind_count);
     for (int i = 0; i < bind_count; ++i) {
         int ret = nw_sock_cfg_parse(argv[i + 1], &bind_arr[i].addr, &bind_arr[i].sock_type);
         if (ret < 0) {
@@ -121,4 +121,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

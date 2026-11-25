@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: example: nw_state add, modify, iterate and timeout
  *     History: yang@haipo.me, 2016/03/23, create
  */
 
@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
         error(1, errno, "nw_state_create fail");
     }
 
-    nw_state_entry *entry = nw_state_add(state, 1.0);
+    nw_state_entry *entry = nw_state_add(state, 1.0, 0);
     if (entry == NULL) {
         error(1, errno, "nw_state_add fail");
     }
@@ -56,7 +56,7 @@ int main(int argc, char *argv[])
     nw_state_del(state, 1);
 
     for (int i = 0; i < 100; ++i) {
-        entry = nw_state_add(state, 1.0);
+        entry = nw_state_add(state, 1.0, 0);
         if (entry == NULL) {
             error(1, errno, "nw_state_add fail");
         }
@@ -66,20 +66,16 @@ int main(int argc, char *argv[])
     }
 
     printf("state count: %zu\n", nw_state_count(state));
-    printf("state table_size: %u\n", state->table_size);
+    printf("state table_size: %u\n", state->dict->size);
 
-    nw_state_iterator *iter = nw_state_get_iterator(state);
-    if (iter == NULL) {
-        error(1, errno, "nw_state_get_iterator fail");
-    }
-    while ((entry = nw_state_next(iter)) != NULL) {
+    nw_state_iterator iter;
+    nw_state_iter_init(&iter, state);
+    while ((entry = nw_state_next(&iter)) != NULL) {
         data = entry->data;
         printf("%u: %s\n", entry->id, data->str);
     }
-    nw_state_iterator_release(iter);
 
     nw_loop_run();
 
     return 0;
 }
-

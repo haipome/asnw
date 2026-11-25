@@ -1,17 +1,15 @@
 /*
- * Description: 
+ * Description: ut_rpc server, a nw_svr speaking rpc_pkg
  *     History: yang@haipo.me, 2016/03/29, create
  */
 
+# include <stdlib.h>
+# include <string.h>
 # include <assert.h>
 
 # include "ut_rpc_svr.h"
 # include "ut_crc32.h"
 # include "nw_sock.h"
-
-struct clt_info {
-    double last_heartbeat;
-};
 
 static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
 {
@@ -21,10 +19,10 @@ static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
     pkg.body = pkg.ext + pkg.ext_size;
 
     if (pkg.command == RPC_CMD_HEARTBEAT) {
+        /* send it back. that it arrived is what keeps the connection alive:
+         * the idle timeout of the nw_svr underneath counts silence */
         if (ses->ses_type != NW_SES_TYPE_COMMON)
             return;
-        struct clt_info *info = ses->privdata;
-        info->last_heartbeat = current_timestamp();
         rpc_send(ses, &pkg);
         return;
     }
@@ -35,8 +33,6 @@ static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
 
 static void on_new_connection(nw_ses *ses)
 {
-    struct clt_info *info = ses->privdata;
-    info->last_heartbeat = current_timestamp();
     rpc_svr *svr = ((nw_svr *)ses->svr)->privdata;
     if (svr->on_new_connection)
         svr->on_new_connection(ses);
@@ -44,37 +40,6 @@ static void on_new_connection(nw_ses *ses)
 
 static void on_error_msg(nw_ses *ses, const char *msg)
 {
-}
-
-static void *on_privdata_alloc(void *svr)
-{
-    rpc_svr *r_svr = ((nw_svr *)svr)->privdata;
-    void *privdata = nw_cache_alloc(r_svr->privdata_cache);
-    assert(privdata != NULL);
-    return privdata;
-}
-
-static void on_privdata_free(void *svr, void *privdata)
-{
-    rpc_svr *r_svr = ((nw_svr *)svr)->privdata;
-    return nw_cache_free(r_svr->privdata_cache, privdata);
-}
-
-static void on_timer(nw_timer *timer, void *privdata)
-{
-    rpc_svr *svr = privdata;
-    double now = current_timestamp();
-
-    nw_ses *curr = svr->raw_svr->clt_list_head;
-    nw_ses *next;
-    while (curr) {
-        next = curr->next;
-        struct clt_info *info = curr->privdata;
-        if (now - info->last_heartbeat > RPC_HEARTBEAT_TIMEOUT) {
-            nw_svr_close_clt(svr->raw_svr, curr);
-        }
-        curr = next;
-    }
 }
 
 rpc_svr *rpc_svr_create(nw_svr_cfg *cfg, rpc_svr_type *type)
@@ -92,19 +57,17 @@ rpc_svr *rpc_svr_create(nw_svr_cfg *cfg, rpc_svr_type *type)
     raw_type.on_new_connection = on_new_connection;
     raw_type.on_error_msg = on_error_msg;
     raw_type.on_recv_pkg = on_recv_pkg;
-    raw_type.on_privdata_alloc = on_privdata_alloc;
-    raw_type.on_privdata_free = on_privdata_free;
 
     cfg->max_pkg_size = RPC_MAX_PKG_SIZE;
+    /* a client sends a heartbeat every RPC_HEARTBEAT_INTERVAL: one that is
+     * silent for RPC_HEARTBEAT_TIMEOUT is gone */
+    cfg->idle_timeout = RPC_HEARTBEAT_TIMEOUT;
     svr->raw_svr = nw_svr_create(cfg, &raw_type, svr);
     if (svr->raw_svr == NULL) {
         free(svr);
         return NULL;
     }
 
-    nw_timer_set(&svr->timer, RPC_HEARTBEAT_INTERVAL, true, on_timer, svr);
-    svr->privdata_cache = nw_cache_create(sizeof(struct clt_info));
-    assert(svr->privdata_cache != NULL);
     svr->on_recv_pkg = type->on_recv_pkg;
     svr->on_new_connection = type->on_new_connection;
 
@@ -113,27 +76,17 @@ rpc_svr *rpc_svr_create(nw_svr_cfg *cfg, rpc_svr_type *type)
 
 int rpc_svr_start(rpc_svr *svr)
 {
-    int ret = nw_svr_start(svr->raw_svr);
-    if (ret < 0)
-        return ret;
-    nw_timer_start(&svr->timer);
-    return 0;
+    return nw_svr_start(svr->raw_svr);
 }
 
 int rpc_svr_stop(rpc_svr *svr)
 {
-    int ret = nw_svr_stop(svr->raw_svr);
-    if (ret < 0)
-        return ret;
-    nw_timer_stop(&svr->timer);
-    return 0;
+    return nw_svr_stop(svr->raw_svr);
 }
 
 void rpc_svr_release(rpc_svr *svr)
 {
     nw_svr_release(svr->raw_svr);
-    nw_timer_stop(&svr->timer);
-    nw_cache_release(svr->privdata_cache);
     free(svr);
 }
 
@@ -141,4 +94,3 @@ void rpc_svr_close_clt(rpc_svr *svr, nw_ses *ses)
 {
     nw_svr_close_clt(svr->raw_svr, ses);
 }
-

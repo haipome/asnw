@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: timer, call a function after an interval, once or repeatedly
  *     History: yang@haipo.me, 2016/03/20, create
  */
 
@@ -51,4 +51,3 @@ double nw_timer_remaining(nw_timer *timer)
 {
     return ev_timer_remaining(timer->loop, &timer->ev);
 }
-

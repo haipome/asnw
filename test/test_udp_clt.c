@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: plain socket client for trying a server: udp
  *     History: yang@haipo.me, 2016/03/21, create
  */
 
@@ -13,7 +13,7 @@
 # include <sys/socket.h>
 # include <netinet/in.h>
 # include <arpa/inet.h>
-# include <netdb.h> 
+# include <netdb.h>
 
 int main(int argc, char *argv[])
 {
@@ -55,4 +55,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

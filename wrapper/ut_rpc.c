@@ -1,33 +1,20 @@
 /*
- * Description: 
+ * Description: ut_rpc, a simple rpc protocol on top of asnw: packet format
  *     History: yang@haipo.me, 2016/03/30, create
  */
 
 # include <stdlib.h>
+# include <string.h>
+# include <time.h>
 # include <assert.h>
 # include <endian.h>
-# include <byteswap.h>
 # include <sys/time.h>
 # include <unistd.h>
 
 # include "ut_rpc.h"
 # include "ut_crc32.h"
 
-# if __BYTE_ORDER == __LITTLE_ENDIAN
-#  define htole16(x) (x)
-#  define htole32(x) (x)
-#  define htole64(x) (x)
-#  define le16toh(x) (x)
-#  define le32toh(x) (x)
-#  define le64toh(x) (x)
-# else
-#  define htole16(x) bswap_16(x)
-#  define htole32(x) bswap_32(x)
-#  define htole64(x) bswap_64(x)
-#  define le16toh(x) bswap_16(x)
-#  define le32toh(x) bswap_32(x)
-#  define le64toh(x) bswap_64(x)
-# endif
+/* htole16/32/64 and le16/32/64toh come from <endian.h> */
 
 int rpc_decode(nw_ses *ses, void *data, size_t max)
 {
@@ -37,7 +24,12 @@ int rpc_decode(nw_ses *ses, void *data, size_t max)
     rpc_pkg *pkg = data;
     if (le32toh(pkg->magic) != RPC_PKG_MAGIC)
         return -1;
-    uint32_t pkg_size = RPC_PKG_HEAD_SIZE + le16toh(pkg->ext_size) + le32toh(pkg->body_size);
+    /* check body_size on its own first: the sum below is 32 bit and a
+     * body_size near 4G would wrap around to a small, valid looking size */
+    uint32_t body_size = le32toh(pkg->body_size);
+    if (body_size > RPC_MAX_PKG_SIZE)
+        return -2;
+    uint32_t pkg_size = RPC_PKG_HEAD_SIZE + le16toh(pkg->ext_size) + body_size;
     if (pkg_size > RPC_MAX_PKG_SIZE)
         return -2;
     if (max < pkg_size)
@@ -45,7 +37,7 @@ int rpc_decode(nw_ses *ses, void *data, size_t max)
 
     uint32_t crc32 = le32toh(pkg->crc32);
     pkg->crc32 = 0;
-    if (crc32 != generate_crc32c(data, pkg_size))
+    if (crc32 != generate_crc32(data, pkg_size))
         return -3;
     pkg->crc32 = crc32;
 
@@ -63,15 +55,20 @@ int rpc_decode(nw_ses *ses, void *data, size_t max)
 
 int rpc_send(nw_ses *ses, rpc_pkg *pkg)
 {
-    static void *send_buf;
-    if (send_buf == NULL) {
-        send_buf = malloc(RPC_MAX_PKG_SIZE);
-        assert(send_buf != NULL);
-    }
-
+    if (pkg->body_size > RPC_MAX_PKG_SIZE)
+        return -1;
     uint32_t pkg_size = RPC_PKG_HEAD_SIZE + pkg->ext_size + pkg->body_size;
     if (pkg_size > RPC_MAX_PKG_SIZE)
         return -1;
+
+    /* the packet is put together on the stack, a big one on the heap */
+    char small_buf[4096];
+    void *send_buf = small_buf;
+    if (pkg_size > sizeof(small_buf)) {
+        send_buf = malloc(pkg_size);
+        if (send_buf == NULL)
+            return -1;
+    }
 
     memcpy(send_buf, pkg, RPC_PKG_HEAD_SIZE);
     if (pkg->ext_size)
@@ -90,9 +87,19 @@ int rpc_send(nw_ses *ses, rpc_pkg *pkg)
     pkg->ext_size  = htole16(pkg->ext_size);
 
     pkg->crc32 = 0;
-    pkg->crc32 = htole32(generate_crc32c(send_buf, pkg_size));
+    pkg->crc32 = htole32(generate_crc32(send_buf, pkg_size));
 
-    return nw_ses_send(ses, send_buf, pkg_size);
+    int ret = nw_ses_send(ses, send_buf, pkg_size);
+    if (send_buf != small_buf)
+        free(send_buf);
+    return ret;
+}
+
+double rpc_monotonic_time(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + ts.tv_nsec / 1000000000.0;
 }
 
 double current_timestamp(void)
@@ -101,4 +108,3 @@ double current_timestamp(void)
     gettimeofday(&tv, NULL);
     return (double)tv.tv_sec + tv.tv_usec / 1000000.0;
 }
-

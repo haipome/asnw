@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: checksum used by ut_rpc
  *     History: yang@haipo.me, 2016/03/29, create
  */
 
@@ -9,6 +9,9 @@
 # include <stddef.h>
 # include <stdint.h>
 
-uint32_t generate_crc32c(const char *string, size_t length);
+/* checksum of length bytes: the standard CRC-32 (IEEE 802.3, the one of
+ * zlib and zip), so a peer written in another language can use its
+ * ordinary crc32 function. not CRC-32C (Castagnoli) */
+uint32_t generate_crc32(const char *buffer, size_t length);
 
 # endif

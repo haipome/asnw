@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: example: one listener process passes connections to worker processes
  *     History: yang@haipo.me, 2016/03/23, create
  */
 
@@ -31,16 +31,25 @@ int outer_decode_pkg(nw_ses *ses, void *data, size_t max)
     return 0;
 }
 
+/* the listener/worker channel is seqpacket: every packet is a full message */
+int inner_decode_pkg(nw_ses *ses, void *data, size_t max)
+{
+    return max;
+}
+
 int outer_on_accept(nw_ses *ses, int sockfd, nw_addr_t *peer_addr)
 {
     if (inner_svr->clt_count == 0) {
         printf("worker: %d, no available worker\n", worker_id);
         return -1;
     }
+    /* pick one of the workers at random */
     int worker = rand() % inner_svr->clt_count;
-    nw_ses *curr = inner_svr->clt_list_head;
+    nw_svr_iterator iter;
+    nw_svr_iter_init(&iter, inner_svr);
+    nw_ses *curr = nw_svr_next(&iter);
     for (int i = 0; i < worker && curr != NULL; ++i) {
-        curr = curr->next;
+        curr = nw_svr_next(&iter);
     }
     if (!curr) {
         return -1;
@@ -114,6 +123,7 @@ void inner_clt_on_connect(nw_ses *ses, bool result)
 int inner_clt_on_close(nw_ses *ses)
 {
     printf("worker: %d connection with listener close\n", worker_id);
+    return 0;
 }
 
 void inner_clt_on_recv_pkg(nw_ses *ses, void *data, size_t size)
@@ -125,6 +135,7 @@ void inner_clt_on_recv_fd(nw_ses *ses, int fd)
 {
     if (nw_svr_add_clt_fd(outer_svr, fd) < 0) {
         printf("worker: %d: nw_svr_add_clt_fd fail\n", worker_id);
+        close(fd);
     } else {
         printf("worker: %d recv fd success\n", worker_id);
     }
@@ -175,6 +186,7 @@ int init_inner_svr(void)
 
     nw_svr_type type;
     memset(&type, 0, sizeof(type));
+    type.decode_pkg = inner_decode_pkg;
     type.on_new_connection = inner_svr_on_new_connection;
     type.on_connection_close = inner_svr_on_connection_close;
     type.on_recv_pkg = inner_svr_on_recv_pkg;
@@ -199,6 +211,7 @@ int init_inner_clt(void)
 
     nw_clt_type type;
     memset(&type, 0, sizeof(type));
+    type.decode_pkg = inner_decode_pkg;
     type.on_connect = inner_clt_on_connect;
     type.on_close = inner_clt_on_close;
     type.on_recv_pkg = inner_clt_on_recv_pkg;
@@ -297,9 +310,10 @@ int main(int argc, char *argv[])
         }
     }
 
-    daemon(true, true);
+    if (daemon(true, true) < 0) {
+        error(1, errno, "daemon fail");
+    }
     nw_loop_run();
 
     return 0;
 }
-

@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: plain socket client for trying a server: tcp
  *     History: yang@haipo.me, 2016/03/21, create
  */
 
@@ -13,7 +13,7 @@
 # include <sys/socket.h>
 # include <netinet/in.h>
 # include <arpa/inet.h>
-# include <netdb.h> 
+# include <netdb.h>
 
 int main(int argc, char *argv[])
 {
@@ -37,7 +37,7 @@ int main(int argc, char *argv[])
     if (connect(sockfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         error(1, errno, "connect fail");
     }
-    
+
     char *line = NULL;
     size_t buf_size = 0;
     while (getline(&line, &buf_size, stdin) != -1) {
@@ -59,4 +59,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

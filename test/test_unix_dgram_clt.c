@@ -1,17 +1,17 @@
 /*
- * Description: 
+ * Description: plain socket client for trying a server: unix dgram
  *     History: yang@haipo.me, 2016/03/21, create
  */
 
-# include <stdio.h>  
-# include <stdlib.h>  
-# include <errno.h>  
+# include <stdio.h>
+# include <stdlib.h>
+# include <errno.h>
 # include <error.h>
 # include <unistd.h>
-# include <string.h>  
-# include <sys/stat.h>  
-# include <sys/socket.h>  
-# include <sys/un.h>  
+# include <string.h>
+# include <sys/stat.h>
+# include <sys/socket.h>
+# include <sys/un.h>
 
 int main(int argc, char *argv[])
 {
@@ -55,4 +55,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

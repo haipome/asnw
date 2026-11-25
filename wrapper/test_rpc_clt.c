@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: example: rpc client sending a ping every second
  *     History: yang@haipo.me, 2016/03/30, create
  */
 
@@ -50,7 +50,7 @@ int main(int argc, char *argv[])
     cfg.name = strdup(argv[1]);
     cfg.addr_count = argc - 2;
     cfg.addr_arr = malloc(sizeof(nw_addr_t) * cfg.addr_count);
-    for (int i = 0; i < cfg.addr_count; ++i) {
+    for (uint32_t i = 0; i < cfg.addr_count; ++i) {
         if (nw_sock_cfg_parse(argv[i + 2], &cfg.addr_arr[i], &cfg.sock_type) < 0)
             error(1, errno, "parse peer addr: %s fail", argv[i + 2]);
     }
@@ -73,4 +73,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

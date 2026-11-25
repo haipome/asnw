@@ -1,5 +1,5 @@
 /*
- * Description: 
+ * Description: c1000k test: server listening on 100 ports
  *     History: yang@haipo.me, 2016/03/30, create
  */
 
@@ -30,7 +30,7 @@ void on_recv_pkg(nw_ses *ses, void *data, size_t size)
 
 void on_error_msg(nw_ses *ses, const char *msg)
 {
-    printf("error occur: %s, perr: %s\n", msg, nw_sock_human_addr(&ses->peer_addr));
+    printf("error: %s, peer: %s\n", msg, nw_sock_human_addr(&ses->peer_addr));
 }
 
 void on_timer(nw_timer *timer, void *privdata)
@@ -67,7 +67,7 @@ int main(int argc, char *argv[])
     cfg.bind_arr = malloc(sizeof(nw_svr_bind) * cfg.bind_count);
     cfg.max_pkg_size = 1024;
 
-    for (int i = 0; i < cfg.bind_count; ++i) {
+    for (uint32_t i = 0; i < cfg.bind_count; ++i) {
         char bind[1024];
         snprintf(bind, sizeof(bind), "tcp@127.0.0.1:%d", 5000 + i);
         nw_sock_cfg_parse(bind, &cfg.bind_arr[i].addr, &cfg.bind_arr[i].sock_type);
@@ -95,4 +95,3 @@ int main(int argc, char *argv[])
 
     return 0;
 }
-

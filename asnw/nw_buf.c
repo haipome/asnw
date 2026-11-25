@@ -1,9 +1,8 @@
 /*
- * Description: network buf manager
+ * Description: buffers: fixed size buf, buf pool, buf list and object cache
  *     History: yang@haipo.me, 2016/03/16, create
  */
 
-# include <errno.h>
 # include <string.h>
 # include "nw_buf.h"
 
@@ -42,6 +41,8 @@ void nw_buf_shift(nw_buf *buf)
 
 nw_buf_pool *nw_buf_pool_create(uint32_t size)
 {
+    if (size == 0)
+        return NULL;
     nw_buf_pool *pool = malloc(sizeof(nw_buf_pool));
     if (pool == NULL)
         return NULL;
@@ -63,6 +64,7 @@ nw_buf *nw_buf_alloc(nw_buf_pool *pool)
 {
     if (pool->free) {
         nw_buf *buf = pool->free_arr[--pool->free];
+        pool->used++;
         buf->size = pool->size;
         buf->rpos = 0;
         buf->wpos = 0;
@@ -73,6 +75,7 @@ nw_buf *nw_buf_alloc(nw_buf_pool *pool)
     nw_buf *buf = malloc(sizeof(nw_buf) + pool->size);
     if (buf == NULL)
         return NULL;
+    pool->used++;
     buf->size = pool->size;
     buf->rpos = 0;
     buf->wpos = 0;
@@ -83,6 +86,8 @@ nw_buf *nw_buf_alloc(nw_buf_pool *pool)
 
 void nw_buf_free(nw_buf_pool *pool, nw_buf *buf)
 {
+    if (pool->used > 0)
+        pool->used--;
     if (pool->free < pool->free_total) {
         pool->free_arr[pool->free++] = buf;
     } else {
@@ -221,13 +226,16 @@ nw_cache *nw_cache_create(uint32_t size)
 
 void *nw_cache_alloc(nw_cache *cache)
 {
-    if (cache->free)
-        return cache->free_arr[--cache->free];
-    return malloc(cache->size);
+    void *obj = cache->free ? cache->free_arr[--cache->free] : malloc(cache->size);
+    if (obj)
+        cache->used++;
+    return obj;
 }
 
 void nw_cache_free(nw_cache *cache, void *obj)
 {
+    if (cache->used > 0)
+        cache->used--;
     if (cache->free < cache->free_total) {
         cache->free_arr[cache->free++] = obj;
     } else {
@@ -251,4 +259,3 @@ void nw_cache_release(nw_cache *cache)
     free(cache->free_arr);
     free(cache);
 }
-

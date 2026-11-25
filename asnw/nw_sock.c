@@ -1,21 +1,21 @@
 /*
- * Description: 
+ * Description: address type, address parsing and socket option helpers
  *     History: yang@haipo.me, 2016/03/16, create
  */
 
 # include <stdio.h>
 # include <stdlib.h>
 # include <string.h>
+# include <strings.h>
 # include <errno.h>
 # include <fcntl.h>
-# include <netdb.h>
 # include <unistd.h>
 
 # include "nw_sock.h"
 
 char *nw_sock_human_addr(nw_addr_t *addr)
 {
-    static char str[128];
+    static __thread char str[NW_HUMAN_ADDR_SIZE];
     char ip[INET6_ADDRSTRLEN];
 
     switch (addr->family) {
@@ -25,7 +25,7 @@ char *nw_sock_human_addr(nw_addr_t *addr)
         break;
     case AF_INET6:
         inet_ntop(addr->family, &addr->in6.sin6_addr, ip, sizeof(ip));
-        snprintf(str, sizeof(str), "%s:%u", ip, ntohs(addr->in6.sin6_port));
+        snprintf(str, sizeof(str), "[%s]:%u", ip, ntohs(addr->in6.sin6_port));
         break;
     case AF_UNIX:
         snprintf(str, sizeof(str), "%s:%s", "unix", (addr->un.sun_path));
@@ -49,7 +49,7 @@ char *nw_sock_human_addr_s(nw_addr_t *addr, char *dest)
         break;
     case AF_INET6:
         inet_ntop(addr->family, &addr->in6.sin6_addr, ip, sizeof(ip));
-        snprintf(dest, NW_HUMAN_ADDR_SIZE, "%s:%u", ip, ntohs(addr->in6.sin6_port));
+        snprintf(dest, NW_HUMAN_ADDR_SIZE, "[%s]:%u", ip, ntohs(addr->in6.sin6_port));
         break;
     case AF_UNIX:
         snprintf(dest, NW_HUMAN_ADDR_SIZE, "%s:%s", "unix", (addr->un.sun_path));
@@ -64,7 +64,7 @@ char *nw_sock_human_addr_s(nw_addr_t *addr, char *dest)
 
 char *nw_sock_ip(nw_addr_t *addr)
 {
-    static char ip[INET6_ADDRSTRLEN];
+    static __thread char ip[INET6_ADDRSTRLEN];
     switch (addr->family) {
     case AF_INET:
         inet_ntop(addr->family, &addr->in.sin_addr, ip, sizeof(ip));
@@ -105,8 +105,7 @@ int nw_sock_set_mode(nw_addr_t *addr, mode_t mode)
 int nw_sock_peer_addr(int sockfd, nw_addr_t *addr)
 {
     addr->addrlen = sizeof(addr->un);
-    if (getpeername(sockfd, NW_SOCKADDR(addr), &addr->addrlen) == 0)
-    {
+    if (getpeername(sockfd, NW_SOCKADDR(addr), &addr->addrlen) == 0) {
         addr->family = NW_SOCKADDR(addr)->sa_family;
         return 0;
     }
@@ -116,8 +115,7 @@ int nw_sock_peer_addr(int sockfd, nw_addr_t *addr)
 int nw_sock_host_addr(int sockfd, nw_addr_t *addr)
 {
     addr->addrlen = sizeof(addr->un);
-    if (getsockname(sockfd, NW_SOCKADDR(addr), &addr->addrlen) == 0)
-    {
+    if (getsockname(sockfd, NW_SOCKADDR(addr), &addr->addrlen) == 0) {
         addr->family = NW_SOCKADDR(addr)->sa_family;
         return 0;
     }
@@ -126,13 +124,21 @@ int nw_sock_host_addr(int sockfd, nw_addr_t *addr)
 
 static int nw_sock_addr_fill_inet(nw_addr_t *addr, const char *host, const char *port)
 {
+    /* the port must be a plain decimal number in 0..65535 */
+    if (*port < '0' || *port > '9')
+        return -1;
+    char *end = NULL;
+    unsigned long port_num = strtoul(port, &end, 10);
+    if (*end != '\0' || port_num > 65535)
+        return -1;
+
     memset(addr, 0, sizeof(nw_addr_t));
-    if (strchr(host, '.') != NULL) {
+    if (strchr(host, ':') == NULL) {
         addr->in.sin_family = AF_INET;
         if (inet_pton(addr->in.sin_family, host, &addr->in.sin_addr) <= 0) {
             return -1;
         }
-        addr->in.sin_port = htons(strtoul(port, NULL, 0));
+        addr->in.sin_port = htons(port_num);
         addr->family = addr->in.sin_family;
         addr->addrlen = sizeof(addr->in);
     } else {
@@ -140,7 +146,7 @@ static int nw_sock_addr_fill_inet(nw_addr_t *addr, const char *host, const char 
         if (inet_pton(addr->in6.sin6_family, host, &addr->in6.sin6_addr) <= 0) {
             return -1;
         }
-        addr->in6.sin6_port = htons(strtoul(port, NULL, 0));
+        addr->in6.sin6_port = htons(port_num);
         addr->family = addr->in6.sin6_family;
         addr->addrlen = sizeof(addr->in6);
     }
@@ -148,12 +154,13 @@ static int nw_sock_addr_fill_inet(nw_addr_t *addr, const char *host, const char 
     return 0;
 }
 
-int nw_sock_addr_fill_unix(nw_addr_t *addr, const char* unix_path)
+static int nw_sock_addr_fill_unix(nw_addr_t *addr, const char *unix_path)
 {
     size_t pathlen = strlen(unix_path);
-    if (pathlen >= sizeof(addr->un.sun_path)) {
+    if (pathlen == 0 || pathlen >= sizeof(addr->un.sun_path)) {
         return -1;
     }
+    memset(addr, 0, sizeof(nw_addr_t));
     addr->un.sun_family = AF_UNIX;
     strcpy(addr->un.sun_path, unix_path);
     addr->family = addr->un.sun_family;
@@ -165,6 +172,8 @@ int nw_sock_addr_fill_unix(nw_addr_t *addr, const char* unix_path)
 int nw_sock_cfg_parse(const char *cfg, nw_addr_t *addr, int *sock_type)
 {
     char *s = strdup(cfg);
+    if (s == NULL)
+        return -1;
     char *sep = strchr(s, '@');
     if (sep == NULL) {
         free(s);
@@ -193,13 +202,25 @@ int nw_sock_cfg_parse(const char *cfg, nw_addr_t *addr, int *sock_type)
     }
 
     if (is_inet) {
-        sep = strchr(name, ':');
-        if (sep == NULL) {
-            free(s);
-            return -3;
+        /* ipv4:port, [ipv6]:port or ipv6:port. the port follows the LAST
+         * colon, an ipv6 address is full of them */
+        char *host = name;
+        if (name[0] == '[') {
+            host = name + 1;
+            sep = strchr(host, ']');
+            if (sep == NULL || sep[1] != ':') {
+                free(s);
+                return -3;
+            }
+            *sep++ = '\0';
+        } else {
+            sep = strrchr(name, ':');
+            if (sep == NULL) {
+                free(s);
+                return -3;
+            }
         }
         *sep = '\0';
-        char *host = name;
         char *port = sep + 1;
         if (nw_sock_addr_fill_inet(addr, host, port) < 0) {
             free(s);
@@ -260,7 +281,19 @@ int nw_sock_set_recv_buf(int sockfd, int buf_size)
 int nw_sock_set_nonblock(int sockfd)
 {
     int flags = fcntl(sockfd, F_GETFL, 0);
+    if (flags < 0)
+        return -1;
     if (fcntl(sockfd, F_SETFL, flags | O_NONBLOCK) != 0)
+        return -1;
+    return 0;
+}
+
+int nw_sock_set_cloexec(int sockfd)
+{
+    int flags = fcntl(sockfd, F_GETFD, 0);
+    if (flags < 0)
+        return -1;
+    if (fcntl(sockfd, F_SETFD, flags | FD_CLOEXEC) != 0)
         return -1;
     return 0;
 }
@@ -280,4 +313,3 @@ int nw_sock_set_reuse_addr(int sockfd)
         return -1;
     return 0;
 }
-
