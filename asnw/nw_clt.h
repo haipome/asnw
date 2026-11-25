@@ -106,6 +106,11 @@ typedef struct nw_clt_type {
     int (*on_close)(nw_ses *ses);
     /* optional
      *
+     * called when everything that was queued has been written to the
+     * socket, see on_drain in nw_svr_type */
+    void (*on_drain)(nw_ses *ses);
+    /* optional
+     *
      * called when a connect attempt ends. result true: connected, the
      * client can send. result false: failed, errno holds the reason;
      * on_close is called next and the client tries again. an attempt that

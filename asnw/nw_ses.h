@@ -20,6 +20,7 @@
  * as a user you get a nw_ses in every callback. what you do with it:
  *   - read its fields: peer_addr, host_addr, id, privdata, svr, sock_type
  *   - send with nw_ses_send (and nw_ses_send_fd)
+ *   - control the flow, if you need to: see "flow control" below
  * create, start and close sessions through nw_svr / nw_clt, not with the
  * nw_ses_* functions of the internal section below.
  */
@@ -80,6 +81,10 @@ typedef struct nw_ses {
     bool closing;
     bool write_shut;
     double close_deadline;
+    /* flow control, see nw_ses_pending and nw_ses_pause_read */
+    size_t write_pending;
+    bool read_paused;
+    bool resume_decode;
 
     /* event handlers, installed by nw_svr / nw_clt */
     int  (*on_accept)(struct nw_ses *ses, int sockfd, nw_addr_t *peer_addr);
@@ -89,6 +94,8 @@ typedef struct nw_ses {
     void (*on_recv_fd)(struct nw_ses *ses, int fd);
     void (*on_error)(struct nw_ses *ses, const char *msg);
     void (*on_close)(struct nw_ses *ses);
+    /* optional, see on_drain in nw_svr_type */
+    void (*on_drain)(struct nw_ses *ses);
 } nw_ses;
 
 /*
@@ -118,6 +125,54 @@ int nw_ses_send(nw_ses *ses, const void *data, size_t size);
  * and still has to close it. not queued: return > 0 on success, -1 on
  * error (including EAGAIN when the socket buffer is full) */
 int nw_ses_send_fd(nw_ses *ses, int fd);
+
+/*
+ * flow control
+ *
+ * by default there is none, and none is needed when a peer that falls
+ * behind is simply dropped: nw_ses_send queues what the socket does not
+ * take, and a queue that reaches buf_limit closes the connection.
+ *
+ * when dropping is not what you want (a proxy, a relay, a big download)
+ * the library gives you the facts and the switches, and the policy is
+ * yours:
+ *
+ *   nw_ses_pending      how much is waiting to be written
+ *   on_drain            a callback of nw_svr / nw_clt: all of it is out
+ *   nw_ses_pause_read   stop taking input from a session
+ *   nw_ses_resume_read  take it again
+ *
+ * e.g. to pass data from `up` to `down` without piling it up: after
+ * sending to down, pause up if nw_ses_pending(down) is over your mark;
+ * in on_drain of down, resume up. the kernel then makes the sender wait.
+ */
+
+/* bytes accepted by nw_ses_send and not written to the socket yet. 0 for a
+ * dgram session, which never queues */
+size_t nw_ses_pending(nw_ses *ses);
+
+/*
+ * stop reading from a session: no more on_recv_pkg for it, the data stays
+ * in the kernel (where it slows the sender down once the socket buffer is
+ * full) and, for a stream, whatever was already read stays in the session.
+ * called from on_recv_pkg, it takes effect at once: the messages behind
+ * the current one are not delivered. sending is not affected.
+ *
+ * a paused session does not notice that its peer closed the connection or
+ * went silent until it is resumed, or until a send to it fails. and it
+ * still times out: being paused counts as silence for the idle timeout, so
+ * give it a timeout of its own (nw_svr_set_clt_idle_timeout) if it may be
+ * paused for long.
+ *
+ * for connections and nw_clt sessions that are connected; nothing happens
+ * for others, for a session that is paused already or shutting down.
+ */
+void nw_ses_pause_read(nw_ses *ses);
+
+/* read again. what was held back is delivered from the next turn of the
+ * event loop on, not from inside this call. nothing happens if the
+ * session is not paused */
+void nw_ses_resume_read(nw_ses *ses);
 
 /*
  * internal, used by nw_svr and nw_clt

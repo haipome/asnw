@@ -182,6 +182,12 @@ typedef struct nw_ws_svr_type {
      * called to free what on_privdata_alloc returned: after on_close, or
      * right away if on_upgrade refused the client */
     void (*on_privdata_free)(void *svr, void *privdata);
+    /* optional, see nw_svr_type: the messages queued for a connection
+     * have all been written to its socket. only called once the handshake
+     * is done. nw_ses_pending, nw_ses_pause_read and nw_ses_resume_read
+     * can be used on the connections of a websocket server as on any
+     * other */
+    void (*on_drain)(nw_ses *ses);
     /* optional, with threads only
      *
      * called on every worker thread before it gets any connection, to set

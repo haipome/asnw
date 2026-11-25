@@ -1034,6 +1034,7 @@ static nw_http_svr *http_svr_new(nw_http_svr_cfg *cfg, nw_http_svr_type *type, v
     raw_type.on_connection_close = on_connection_close;
     raw_type.on_error_msg = on_error_msg;
     raw_type.on_timeout = on_timeout;
+    raw_type.on_drain = type->on_drain;
     raw_type.on_privdata_alloc = on_privdata_alloc;
     raw_type.on_privdata_free = on_privdata_free;
 

@@ -228,6 +228,11 @@ typedef struct nw_http_svr_type {
     /* optional, see nw_svr_type. refused requests (400, 413 ...) are
      * reported here too */
     void (*on_error_msg)(nw_ses *ses, const char *msg);
+    /* optional, see nw_svr_type: the responses queued for a connection
+     * have all been written to its socket. nw_ses_pending,
+     * nw_ses_pause_read and nw_ses_resume_read can be used on the
+     * connections of a http server as on any other */
+    void (*on_drain)(nw_ses *ses);
     /* optional, with threads only
      *
      * called on every worker thread before it gets any connection, to set

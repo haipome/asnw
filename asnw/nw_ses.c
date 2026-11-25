@@ -28,13 +28,16 @@ static void watch_stop(nw_ses *ses)
     }
 }
 
+/* a session whose reading is paused (nw_ses_pause_read) watches for
+ * nothing, or for writable only */
 static void watch_read(nw_ses *ses)
 {
     if (ev_is_active(&ses->ev)) {
         ev_io_stop(ses->loop, &ses->ev);
     }
     ev_io_init(&ses->ev, libev_on_read_write_evt, ses->sockfd, EV_READ);
-    ev_io_start(ses->loop, &ses->ev);
+    if (!ses->read_paused)
+        ev_io_start(ses->loop, &ses->ev);
 }
 
 static void watch_read_write(nw_ses *ses)
@@ -42,8 +45,18 @@ static void watch_read_write(nw_ses *ses)
     if (ev_is_active(&ses->ev)) {
         ev_io_stop(ses->loop, &ses->ev);
     }
-    ev_io_init(&ses->ev, libev_on_read_write_evt, ses->sockfd, EV_READ | EV_WRITE);
+    ev_io_init(&ses->ev, libev_on_read_write_evt, ses->sockfd, ses->read_paused ? EV_WRITE : EV_READ | EV_WRITE);
     ev_io_start(ses->loop, &ses->ev);
+}
+
+/* watch for what the session needs right now */
+static void watch_update(nw_ses *ses)
+{
+    if (ses->write_buf->count > 0) {
+        watch_read_write(ses);
+    } else {
+        watch_read(ses);
+    }
 }
 
 static void watch_accept(nw_ses *ses)
@@ -150,9 +163,61 @@ static int shed_connection(nw_ses *ses)
     return ret;
 }
 
+/*
+ * hand the complete messages in the read buffer of a stream session to
+ * the application. return false if on_can_read has to stop there: the
+ * session was closed, or its reading was paused by the callback.
+ */
+static bool stream_decode(nw_ses *ses)
+{
+    size_t size = 0;
+    while ((size = nw_buf_size(ses->read_buf)) > 0) {
+        int ret = ses->decode_pkg(ses, ses->read_buf->data + ses->read_buf->rpos, size);
+        if (ret < 0) {
+            char errmsg[100];
+            snprintf(errmsg, sizeof(errmsg), "decode msg error: %d", ret);
+            ses->on_error(ses, errmsg);
+            return false;
+        } else if (ret > 0) {
+            ses->on_recv_pkg(ses, ses->read_buf->data + ses->read_buf->rpos, ret);
+            if (!ses->read_buf)
+                return false;
+            if (ses->closing) {
+                /* the callback shut the session down: the rest
+                 * of what was read goes the same way */
+                ses->read_buf->rpos = ses->read_buf->wpos = 0;
+                break;
+            }
+            ses->read_buf->rpos += ret;
+            if (ses->read_paused) {
+                /* the callback paused reading: what is left waits here
+                 * for nw_ses_resume_read */
+                if (nw_buf_size(ses->read_buf) == 0) {
+                    nw_buf_free(ses->pool, ses->read_buf);
+                    ses->read_buf = NULL;
+                } else {
+                    nw_buf_shift(ses->read_buf);
+                    ses->resume_decode = true;
+                }
+                return false;
+            }
+        } else {
+            nw_buf_shift(ses->read_buf);
+            if (ses->read_buf->wpos == ses->read_buf->size) {
+                ses->on_error(ses, "decode msg error");
+                return false;
+            }
+            break;
+        }
+    }
+
+    nw_buf_shift(ses->read_buf);
+    return true;
+}
+
 static void on_can_read(nw_ses *ses)
 {
-    if (ses->sockfd < 0)
+    if (ses->sockfd < 0 || ses->read_paused)
         return;
     if (ses->read_buf == NULL) {
         ses->read_buf = nw_buf_alloc(ses->pool);
@@ -165,6 +230,12 @@ static void on_can_read(nw_ses *ses)
     switch (ses->sock_type) {
     case SOCK_STREAM:
         {
+            if (ses->resume_decode) {
+                /* messages held back while reading was paused */
+                ses->resume_decode = false;
+                if (!stream_decode(ses))
+                    return;
+            }
             while (true) {
                 int ret = read(ses->sockfd, ses->read_buf->data + ses->read_buf->wpos, nw_buf_avail(ses->read_buf));
                 if (ret < 0) {
@@ -192,36 +263,8 @@ static void on_can_read(nw_ses *ses)
                     continue;
                 }
 
-                size_t size = 0;
-                while ((size = nw_buf_size(ses->read_buf)) > 0) {
-                    ret = ses->decode_pkg(ses, ses->read_buf->data + ses->read_buf->rpos, size);
-                    if (ret < 0) {
-                        char errmsg[100];
-                        snprintf(errmsg, sizeof(errmsg), "decode msg error: %d", ret);
-                        ses->on_error(ses, errmsg);
-                        return;
-                    } else if (ret > 0) {
-                        ses->on_recv_pkg(ses, ses->read_buf->data + ses->read_buf->rpos, ret);
-                        if (!ses->read_buf)
-                            return;
-                        if (ses->closing) {
-                            /* the callback shut the session down: the rest
-                             * of what was read goes the same way */
-                            ses->read_buf->rpos = ses->read_buf->wpos = 0;
-                            break;
-                        }
-                        ses->read_buf->rpos += ret;
-                    } else {
-                        nw_buf_shift(ses->read_buf);
-                        if (ses->read_buf->wpos == ses->read_buf->size) {
-                            ses->on_error(ses, "decode msg error");
-                            return;
-                        }
-                        break;
-                    }
-                }
-
-                nw_buf_shift(ses->read_buf);
+                if (!stream_decode(ses))
+                    return;
             }
             if (nw_buf_size(ses->read_buf) == 0) {
                 nw_buf_free(ses->pool, ses->read_buf);
@@ -232,6 +275,9 @@ static void on_can_read(nw_ses *ses)
     case SOCK_DGRAM:
         {
             while (true) {
+                /* paused by the callback: the rest stays in the kernel */
+                if (ses->read_paused)
+                    break;
                 /* addrlen is value-result: it must be reset before every call,
                  * otherwise a short source address truncates all later ones */
                 nw_addr_t from;
@@ -287,6 +333,8 @@ static void on_can_read(nw_ses *ses)
     case SOCK_SEQPACKET:
         {
             while (true) {
+                if (ses->read_paused)
+                    break;
                 struct msghdr msg;
                 struct iovec io;
                 char control[CMSG_SPACE(sizeof(int))];
@@ -371,10 +419,13 @@ static void on_can_write(nw_ses *ses)
             /* returns the bytes written so far, never negative */
             size_t nwrite = nw_write_stream(ses, buf->data + buf->rpos, size);
             buf->rpos += nwrite;
+            ses->write_pending -= nwrite;
             done = (nwrite == size);
         } else {
             /* a packet is sent whole or not at all, -1 on failure */
             done = (nw_write_packet(ses, buf->data + buf->rpos, size) >= 0);
+            if (done)
+                ses->write_pending -= size;
         }
         if (!done) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -394,9 +445,14 @@ static void on_can_write(nw_ses *ses)
         watch_read(ses);
         /* everything is out: a session that is shutting down can tell the
          * peer that nothing more will come */
-        if (ses->closing && !ses->write_shut) {
-            shutdown(ses->sockfd, SHUT_WR);
-            ses->write_shut = true;
+        if (ses->closing) {
+            if (!ses->write_shut) {
+                shutdown(ses->sockfd, SHUT_WR);
+                ses->write_shut = true;
+            }
+        } else if (ses->on_drain) {
+            /* the last thing done here: the callback may close the session */
+            ses->on_drain(ses);
         }
     }
 }
@@ -566,6 +622,7 @@ int nw_ses_send(nw_ses *ses, const void *data, size_t size)
             ses->on_error(ses, "no send buf");
             return -1;
         }
+        ses->write_pending += size;
     } else {
         switch (ses->sock_type) {
         case SOCK_STREAM:
@@ -577,6 +634,7 @@ int nw_ses_send(nw_ses *ses, const void *data, size_t size)
                             ses->on_error(ses, "no send buf");
                             return -1;
                         }
+                        ses->write_pending += size - nwrite;
                         watch_read_write(ses);
                     } else {
                         char errmsg[100];
@@ -607,6 +665,7 @@ int nw_ses_send(nw_ses *ses, const void *data, size_t size)
                             ses->on_error(ses, "no send buf");
                             return -1;
                         }
+                        ses->write_pending += size;
                         watch_read_write(ses);
                     } else {
                         char errmsg[100];
@@ -623,6 +682,37 @@ int nw_ses_send(nw_ses *ses, const void *data, size_t size)
     }
 
     return 0;
+}
+
+size_t nw_ses_pending(nw_ses *ses)
+{
+    return ses->write_pending;
+}
+
+/* is this a session that reads and writes data right now: not a listening
+ * one, not one that is still connecting, not a closed one */
+static bool is_flowing(nw_ses *ses)
+{
+    return ses->sockfd >= 0 && ev_cb(&ses->ev) == libev_on_read_write_evt;
+}
+
+void nw_ses_pause_read(nw_ses *ses)
+{
+    if (!is_flowing(ses) || ses->read_paused || ses->closing)
+        return;
+    ses->read_paused = true;
+    watch_update(ses);
+}
+
+void nw_ses_resume_read(nw_ses *ses)
+{
+    if (!is_flowing(ses) || !ses->read_paused)
+        return;
+    ses->read_paused = false;
+    watch_update(ses);
+    /* look at the socket, and at what was held back, on the next turn of
+     * the loop: the caller may be in the middle of something */
+    ev_feed_event(ses->loop, &ses->ev, EV_READ);
 }
 
 int nw_ses_send_fd(nw_ses *ses, int fd)
@@ -673,6 +763,12 @@ void nw_ses_shutdown(nw_ses *ses)
     if (ses->sockfd < 0 || ses->closing)
         return;
     ses->closing = true;
+    if (ses->read_paused) {
+        /* read again, to see the peer hang up; the data is thrown away */
+        ses->read_paused = false;
+        ses->resume_decode = false;
+        watch_update(ses);
+    }
     if (ses->write_buf->count == 0) {
         shutdown(ses->sockfd, SHUT_WR);
         ses->write_shut = true;
@@ -687,6 +783,9 @@ int nw_ses_close(nw_ses *ses)
     ses->write_shut = false;
     ses->deadline = 0;
     ses->idle_mark = 0;
+    ses->write_pending = 0;
+    ses->read_paused = false;
+    ses->resume_decode = false;
     if (ses->sockfd >= 0) {
         close(ses->sockfd);
         ses->sockfd = -1;

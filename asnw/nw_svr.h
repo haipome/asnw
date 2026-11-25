@@ -190,6 +190,14 @@ typedef struct nw_svr_type {
      *
      * the callback may close this connection, and others too */
     void (*on_timeout)(nw_ses *ses);
+    /* optional
+     *
+     * called when everything that was queued for a connection has been
+     * written to its socket: nw_ses_pending is 0 again. only when
+     * something had to wait, not after a send that went out at once. for
+     * flow control (see nw_ses.h) and for sending something big piece by
+     * piece. the callback may send, and may close the connection */
+    void (*on_drain)(nw_ses *ses);
     /* optional, if set on_privdata_free must be set too
      *
      * called for every new connection, before on_new_connection. the

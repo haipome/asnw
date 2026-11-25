@@ -50,6 +50,7 @@
 | t_http_hub | `nw_http` 多线程模式：在所属线程上直接回复、经每线程自己的 `nw_job` 稍后回复、主线程按 id 跨线程回复（含自定义头、大 body、回复后关闭）、`100 Continue`、单 worker、启动失败 |
 | t_ws_hub | `nw_ws` 多线程模式（`thread_count`）：按 id 发送和关闭、广播（含未握手连接收不到）、各线程同时广播时单个连接的消息顺序、单 worker、启动失败 |
 | t_threads | 4 个线程各自一个 loop，同时跑 server、client、timer、state、job、rpc，互不干扰（要在 TSan 下跑才有意义） |
+| t_flow | 流量控制：`nw_ses_pending`、`on_drain`、暂停/恢复读取（含已读入缓冲的消息、seqpacket、暂停期间对端断开、暂停后 shutdown）；中继场景下不做流控会被断开、做了则积压不超过设定值 |
 | t_svr_release | 空闲、带活动连接、多地址 server 的 release；bind 不删除普通文件 |
 | t_accept_emfile | fd 耗尽时拒绝连接而不空转，恢复后正常 |
 | t_sigpipe | 对端已关闭时发送不触发 SIGPIPE |

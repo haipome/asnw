@@ -246,6 +246,7 @@ nw_clt *nw_clt_create(nw_clt_cfg *cfg, nw_clt_type *type, void *privdata)
     clt->ses.on_connect  = on_connect;
     clt->ses.on_error    = on_error;
     clt->ses.on_close    = on_close;
+    clt->ses.on_drain    = type->on_drain;
 
     return clt;
 }

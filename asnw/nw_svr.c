@@ -220,6 +220,7 @@ static int nw_svr_add_clt(nw_ses *ses, int sockfd, nw_addr_t *peer_addr)
     clt->on_recv_fd  = svr->type.on_recv_fd == NULL ? on_recv_fd : svr->type.on_recv_fd;
     clt->on_error    = on_error;
     clt->on_close    = on_close;
+    clt->on_drain    = svr->type.on_drain;
 
     svr->clt_count++;
     clt->active_time = ev_now(nw_default_loop);

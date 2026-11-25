@@ -866,6 +866,14 @@ static void on_error_msg(nw_ses *ses, const char *msg)
     report(nw_ws_svr_of(ses), ses, msg);
 }
 
+static void on_drain(nw_ses *ses)
+{
+    nw_ws_svr *svr = nw_ws_svr_of(ses);
+    nw_ws_conn *conn = ses->privdata;
+    if (conn->upgraded && svr->type.on_drain)
+        svr->type.on_drain(ses);
+}
+
 static void *on_privdata_alloc(void *raw_svr)
 {
     nw_ws_svr *svr = ((nw_svr *)raw_svr)->privdata;
@@ -960,6 +968,7 @@ static nw_ws_svr *ws_svr_new(nw_ws_svr_cfg *cfg, nw_ws_svr_type *type, void *pri
     raw_type.on_connection_close = on_connection_close;
     raw_type.on_error_msg = on_error_msg;
     raw_type.on_timeout = on_timeout;
+    raw_type.on_drain = on_drain;
     raw_type.on_privdata_alloc = on_privdata_alloc;
     raw_type.on_privdata_free = on_privdata_free;
 
