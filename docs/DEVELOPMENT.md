@@ -47,6 +47,7 @@
 | t_svr_timeout | 空闲超时（全局与单连接）、截止时间、on_timeout 回调、有序关闭时最后的数据不丢 |
 | t_svr_close_callback | 关闭回调里发送、重复关闭、关闭其他连接（连锁）都只触发一次回调；遍历时任意连接被关闭都安全 |
 | t_hub | `nw_hub`：连接轮流分给各线程、回调在所属线程执行、按 id 跨线程发送/关闭/广播、`nw_hub_post`、队列上限、启动失败回滚、释放过程中仍有跨线程发送 |
+| t_http_hub | `nw_http` 多线程模式：在所属线程上直接回复、经每线程自己的 `nw_job` 稍后回复、主线程按 id 跨线程回复（含自定义头、大 body、回复后关闭）、`100 Continue`、单 worker、启动失败 |
 | t_ws_hub | `nw_ws` 多线程模式（`thread_count`）：按 id 发送和关闭、广播（含未握手连接收不到）、各线程同时广播时单个连接的消息顺序、单 worker、启动失败 |
 | t_threads | 4 个线程各自一个 loop，同时跑 server、client、timer、state、job、rpc，互不干扰（要在 TSan 下跑才有意义） |
 | t_svr_release | 空闲、带活动连接、多地址 server 的 release；bind 不删除普通文件 |

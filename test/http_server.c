@@ -15,6 +15,10 @@
  *   ./http_server 'tcp@127.0.0.1:8080'
  *   curl -i http://127.0.0.1:8080/
  *   curl -i -d 'some data' 'http://127.0.0.1:8080/echo?a=1'
+ *
+ * with a number in front of the addresses it runs on that many threads:
+ *   ./http_server 4 'tcp@127.0.0.1:8080'
+ * the handler is the same either way, it uses nothing but the request.
  */
 
 static void on_request(nw_ses *ses, nw_http_request *req)
@@ -51,8 +55,14 @@ static void on_error_msg(nw_ses *ses, const char *msg)
 
 int main(int argc, char *argv[])
 {
+    uint32_t thread_count = 0;
+    if (argc >= 2 && strspn(argv[1], "0123456789") == strlen(argv[1])) {
+        thread_count = atoi(argv[1]);
+        argc--;
+        argv++;
+    }
     if (argc < 2) {
-        printf("usage: %s bind...\n", argv[0]);
+        printf("usage: %s [threads] bind...\n", argv[0]);
         exit(0);
     }
 
@@ -72,6 +82,7 @@ int main(int argc, char *argv[])
 
     nw_http_svr_cfg cfg;
     memset(&cfg, 0, sizeof(cfg));
+    cfg.thread_count = thread_count;
     cfg.bind_count = bind_count;
     cfg.bind_arr = bind_arr;
 

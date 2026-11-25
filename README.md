@@ -4,7 +4,7 @@ A small asynchronous network library for Linux, written in C on top of [libev](h
 
 You describe a server or a client with a config struct and a handful of callbacks; asnw does the sockets, buffering, message framing, reconnecting and timers. One API covers five transports: TCP, UDP, and unix stream / datagram / seqpacket sockets (including file descriptor passing). An HTTP/1.1 server and a WebSocket server are included.
 
-The core is about 5,000 lines and the two protocol servers another 2,400. No dependency other than libev. One event loop per thread and no locks in the callbacks; `nw_hub` runs a server on several threads.
+The core is about 5,000 lines and the two protocol servers another 2,800. No dependency other than libev. One event loop per thread and no locks in the callbacks; `nw_hub` runs a server on several threads.
 
 The headers in `asnw/` are the reference: every struct field, callback and function is documented there, and each header starts with an overview of its module.
 
@@ -30,7 +30,7 @@ Protocols built on the core, which knows nothing about them:
 
 | Module | What it is |
 |--------|------------|
-| `nw_http` | HTTP/1.0 and 1.1 server, with zero copy request parsing. |
+| `nw_http` | HTTP/1.0 and 1.1 server, with zero copy request parsing. On one thread, or on several with `thread_count`. |
 | `nw_ws` | WebSocket server (RFC 6455): messages, broadcast, pings. On one thread, or on several with `thread_count`. |
 | `wrapper/ut_rpc` | A simple binary RPC protocol, server and client, with heartbeats and failover. Kept outside the library as an example of wrapping it. |
 
@@ -153,6 +153,7 @@ int main(void)
 
 - **Zero copy reads.** The request is parsed in place: method, path, query and every header name and value are C strings pointing into the connection's read buffer. Nothing is allocated or copied, which also means the request is only valid inside `on_request`.
 - **Answering later.** Keep `ses->id` and call `nw_http_reply_id(svr, id, &rsp)` when the result is ready, for instance from a `nw_job` callback. If the client has left, nothing happens.
+- **Several threads.** Set `thread_count` in the cfg and the server runs on a `nw_hub`: the thread that created it accepts, the connections live on that many worker threads and `on_request` runs there, for different connections at the same time. `nw_http_reply_id` works from any thread. To answer later without crossing threads, create what each worker needs (a `nw_job`, a client) in `on_thread_start`. Data shared between requests is yours to lock. 0, the default, means no threads at all.
 - **Supported:** HTTP/1.0 and 1.1, keep-alive, `Content-Length` and chunked request bodies, `Expect: 100-continue`, `HEAD`, idle and slow-request timeouts.
 - **Not supported:** TLS, HTTP/2, WebSocket, streamed responses, pipelining behind a request that is answered later. A request has to fit in `max_request_size` (64K by default).
 - **Strict.** Requests that are malformed or ambiguous about where they end are answered with 400 and the connection is closed. See the list at the top of `nw_http.h`.
@@ -266,7 +267,7 @@ Built into `build/debug/test/`, `build/debug/wrapper/` and `build/debug/c1000k/`
 | Program | What it shows |
 |---------|---------------|
 | `test/echo_server` | Echo server on any number of addresses: `echo_server 'tcp@127.0.0.1:1234' 'stream@/tmp/echo.sock'` |
-| `test/http_server` | HTTP server, try it with curl: `http_server 'tcp@127.0.0.1:8080'` |
+| `test/http_server` | HTTP server, try it with curl: `http_server 'tcp@127.0.0.1:8080'`. `http_server 4 'tcp@...'` runs it on 4 threads |
 | `test/hub_server` | Chat server on N threads: `hub_server 4 'tcp@127.0.0.1:1234'`, then `nc 127.0.0.1 1234` in a few terminals |
 | `test/ws_server` | WebSocket chat room: `ws_server 'tcp@127.0.0.1:8081'`, then connect from a browser console. `ws_server 4 'tcp@...'` runs it on 4 threads |
 | `test/test_clt` | Client that pings a server once a second: `test_clt 'tcp@127.0.0.1:1234'` |

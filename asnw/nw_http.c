@@ -701,8 +701,105 @@ int nw_http_reply(nw_ses *ses, nw_http_response *rsp)
     return http_send(svr, ses, conn, rsp, keep_alive);
 }
 
+/*
+ * with threads a response for a connection of another thread travels
+ * there as one block: this header, the lengths of the header names and
+ * values, then all the strings and the body.
+ */
+struct reply_request {
+    uint64_t id;
+    int status;
+    bool close;
+    uint32_t reason_len;
+    uint32_t header_count;
+    size_t body_size;
+    /* name and value length of each header */
+    uint32_t lens[NW_HTTP_MAX_HEADERS][2];
+    char data[];
+};
+
+/* on the worker of the connection: put the response together again */
+static void on_reply_request(nw_hub *hub, void *data, size_t size)
+{
+    struct reply_request *request = data;
+    nw_ses *ses = nw_svr_get_clt(nw_hub_svr(hub), request->id);
+    if (ses == NULL)
+        return;
+
+    nw_http_response rsp;
+    char *p = request->data;
+    rsp.status = request->status;
+    rsp.close = request->close;
+    rsp.reason = NULL;
+    if (request->reason_len > 0) {
+        /* sent along with its '\0' */
+        rsp.reason = p;
+        p += request->reason_len;
+    }
+    rsp.header_count = request->header_count;
+    for (uint32_t i = 0; i < rsp.header_count; ++i) {
+        rsp.headers[i].name.s = p;
+        rsp.headers[i].name.len = request->lens[i][0];
+        p += request->lens[i][0];
+        rsp.headers[i].value.s = p;
+        rsp.headers[i].value.len = request->lens[i][1];
+        p += request->lens[i][1];
+    }
+    rsp.body = p;
+    rsp.body_size = request->body_size;
+    nw_http_reply(ses, &rsp);
+}
+
+static int post_reply(nw_http_svr *svr, uint64_t id, nw_http_response *rsp)
+{
+    if (id == 0 || rsp->header_count > NW_HTTP_MAX_HEADERS)
+        return -1;
+    size_t reason_len = rsp->reason ? strlen(rsp->reason) + 1 : 0;
+    size_t size = sizeof(struct reply_request) + reason_len + rsp->body_size;
+    for (uint32_t i = 0; i < rsp->header_count; ++i)
+        size += rsp->headers[i].name.len + rsp->headers[i].value.len;
+
+    struct reply_request *request = malloc(size);
+    if (request == NULL)
+        return -1;
+    memset(request, 0, sizeof(struct reply_request));
+    request->id = id;
+    request->status = rsp->status;
+    request->close = rsp->close;
+    request->reason_len = reason_len;
+    request->header_count = rsp->header_count;
+    request->body_size = rsp->body_size;
+    char *p = request->data;
+    if (reason_len > 0) {
+        memcpy(p, rsp->reason, reason_len);
+        p += reason_len;
+    }
+    for (uint32_t i = 0; i < rsp->header_count; ++i) {
+        nw_http_header *header = &rsp->headers[i];
+        request->lens[i][0] = header->name.len;
+        request->lens[i][1] = header->value.len;
+        memcpy(p, header->name.s, header->name.len);
+        p += header->name.len;
+        memcpy(p, header->value.s, header->value.len);
+        p += header->value.len;
+    }
+    if (rsp->body_size > 0)
+        memcpy(p, rsp->body, rsp->body_size);
+
+    int ret = nw_hub_post(svr->hub, nw_hub_index_of(id), on_reply_request, request, size);
+    free(request);
+    return ret;
+}
+
 int nw_http_reply_id(nw_http_svr *svr, uint64_t id, nw_http_response *rsp)
 {
+    if (svr->hub) {
+        /* svr may be the server of any thread, or the front one: the id
+         * tells which worker the connection is on */
+        if (nw_hub_index(svr->hub) != (int)nw_hub_index_of(id))
+            return post_reply(svr, id, rsp);
+        svr = nw_hub_svr(svr->hub)->privdata;
+    }
     nw_ses *ses = nw_svr_get_clt(svr->raw_svr, id);
     if (ses == NULL)
         return -1;
@@ -901,6 +998,7 @@ static void on_timeout(nw_ses *ses)
 
 static void http_svr_free(nw_http_svr *svr)
 {
+    nw_timer_stop(&svr->continue_timer);
     if (svr->raw_svr)
         nw_svr_release(svr->raw_svr);
     if (svr->conn_cache)
@@ -910,15 +1008,14 @@ static void http_svr_free(nw_http_svr *svr)
     free(svr);
 }
 
-nw_http_svr *nw_http_svr_create(nw_http_svr_cfg *cfg, nw_http_svr_type *type, void *privdata)
+/*
+ * the settings, and what the nw_svr underneath is made from. with threads
+ * this runs once for the front server (with_svr false: its nw_svr is the
+ * accepting one of the hub) and once on every worker thread.
+ */
+static nw_http_svr *http_svr_new(nw_http_svr_cfg *cfg, nw_http_svr_type *type, void *privdata, bool with_svr,
+        nw_svr_cfg *raw_cfg_out, nw_svr_type *raw_type_out)
 {
-    if (type->on_request == NULL)
-        return NULL;
-    for (uint32_t i = 0; i < cfg->bind_count; ++i) {
-        if (cfg->bind_arr[i].sock_type != SOCK_STREAM)
-            return NULL;
-    }
-
     nw_http_svr *svr = malloc(sizeof(nw_http_svr));
     if (svr == NULL)
         return NULL;
@@ -957,28 +1054,120 @@ nw_http_svr *nw_http_svr_create(nw_http_svr_cfg *cfg, nw_http_svr_type *type, vo
     raw_type.on_privdata_alloc = on_privdata_alloc;
     raw_type.on_privdata_free = on_privdata_free;
 
-    svr->raw_svr = nw_svr_create(&raw_cfg, &raw_type, svr);
-    if (svr->raw_svr == NULL) {
-        http_svr_free(svr);
-        return NULL;
+    if (with_svr) {
+        svr->raw_svr = nw_svr_create(&raw_cfg, &raw_type, svr);
+        if (svr->raw_svr == NULL) {
+            http_svr_free(svr);
+            return NULL;
+        }
+        /* on the loop of the thread the connections are on */
+        nw_timer_set(&svr->continue_timer, 0, false, on_continue_timer, svr);
     }
-    nw_timer_set(&svr->continue_timer, 0, false, on_continue_timer, svr);
-
+    if (raw_cfg_out)
+        *raw_cfg_out = raw_cfg;
+    if (raw_type_out)
+        *raw_type_out = raw_type;
     return svr;
 }
 
+/*
+ * with threads. the hub calls these on each worker thread.
+ */
+
+/* a complete nw_http_svr for this thread; the hub puts the connections
+ * into its nw_svr */
+static nw_svr *worker_svr_create(nw_hub *hub, uint32_t index)
+{
+    nw_http_svr *front = hub->privdata;
+    nw_http_svr *svr = http_svr_new(front->creating_cfg, &front->type, front->privdata, true, NULL, NULL);
+    if (svr == NULL)
+        return NULL;
+    svr->hub = hub;
+    svr->front = front;
+    return svr->raw_svr;
+}
+
+static void worker_svr_release(nw_hub *hub, uint32_t index, nw_svr *raw_svr)
+{
+    http_svr_free(raw_svr->privdata);
+}
+
+static int on_thread_start(nw_hub *hub, uint32_t index)
+{
+    nw_http_svr *svr = nw_hub_svr(hub)->privdata;
+    return svr->type.on_thread_start(svr, index);
+}
+
+static void on_thread_stop(nw_hub *hub, uint32_t index)
+{
+    nw_http_svr *svr = nw_hub_svr(hub)->privdata;
+    svr->type.on_thread_stop(svr, index);
+}
+
+nw_http_svr *nw_http_svr_create(nw_http_svr_cfg *cfg, nw_http_svr_type *type, void *privdata)
+{
+    if (type->on_request == NULL)
+        return NULL;
+    for (uint32_t i = 0; i < cfg->bind_count; ++i) {
+        if (cfg->bind_arr[i].sock_type != SOCK_STREAM)
+            return NULL;
+    }
+    if (cfg->thread_count == 0)
+        return http_svr_new(cfg, type, privdata, true, NULL, NULL);
+
+    /* the front server: it has the hub, whose accepting nw_svr stands in
+     * for raw_svr. the workers each make their own from the same cfg */
+    nw_hub_cfg hub_cfg;
+    nw_hub_type hub_type;
+    memset(&hub_cfg, 0, sizeof(hub_cfg));
+    memset(&hub_type, 0, sizeof(hub_type));
+    nw_http_svr *svr = http_svr_new(cfg, type, privdata, false, &hub_cfg.svr, &hub_type.svr);
+    if (svr == NULL)
+        return NULL;
+    hub_cfg.thread_count = cfg->thread_count;
+    hub_cfg.queue_limit = cfg->queue_limit;
+    hub_type.svr_create = worker_svr_create;
+    hub_type.svr_release = worker_svr_release;
+    if (type->on_thread_start)
+        hub_type.on_thread_start = on_thread_start;
+    if (type->on_thread_stop)
+        hub_type.on_thread_stop = on_thread_stop;
+
+    svr->creating_cfg = cfg;
+    svr->hub = nw_hub_create(&hub_cfg, &hub_type, svr);
+    svr->creating_cfg = NULL;
+    if (svr->hub == NULL) {
+        http_svr_free(svr);
+        return NULL;
+    }
+    svr->raw_svr = svr->hub->acceptor;
+    return svr;
+}
+
+/* these three are for the server nw_http_svr_create returned, not for the
+ * one of a worker thread */
 int nw_http_svr_start(nw_http_svr *svr)
 {
-    return nw_svr_start(svr->raw_svr);
+    if (svr->front)
+        return -1;
+    return svr->hub ? nw_hub_start(svr->hub) : nw_svr_start(svr->raw_svr);
 }
 
 int nw_http_svr_stop(nw_http_svr *svr)
 {
-    return nw_svr_stop(svr->raw_svr);
+    if (svr->front)
+        return -1;
+    return svr->hub ? nw_hub_stop(svr->hub) : nw_svr_stop(svr->raw_svr);
 }
 
 void nw_http_svr_release(nw_http_svr *svr)
 {
-    nw_timer_stop(&svr->continue_timer);
+    if (svr->front)
+        return;
+    if (svr->hub) {
+        /* ends the workers, each of which frees its own server */
+        nw_hub_release(svr->hub);
+        svr->raw_svr = NULL;
+    }
     http_svr_free(svr);
 }

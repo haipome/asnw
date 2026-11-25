@@ -13,6 +13,7 @@
 
 # include "nw_buf.h"
 # include "nw_svr.h"
+# include "nw_hub.h"
 # include "nw_timer.h"
 
 /*
@@ -165,6 +166,29 @@ const char *nw_http_status_text(int status);
  * server
  */
 
+typedef struct nw_http_svr nw_http_svr;
+
+/*
+ * several threads
+ *
+ * with thread_count in the cfg the server runs on a nw_hub: the thread
+ * that creates it only accepts, and every connection lives on one of
+ * thread_count worker threads, where its requests are handled. on_request
+ * then runs for different connections at the same time; see nw_hub.h for
+ * what that means for your own data.
+ *
+ * each worker has a nw_http_svr of its own, which is what nw_http_svr_of
+ * returns in a callback; its raw_svr holds the connections of that thread
+ * and its privdata is the one given to nw_http_svr_create. nw_http_reply
+ * is used as before, on the thread of the connection. nw_http_reply_id may
+ * be called from any thread, with the server returned by
+ * nw_http_svr_create or the one of any worker.
+ *
+ * to answer later without leaving the thread, give every worker what it
+ * needs in on_thread_start: a nw_job created there hands its results back
+ * on that thread, where nw_http_reply_id acts at once.
+ */
+
 typedef struct nw_http_svr_cfg {
     /* number of entries in bind_arr, at least 1 */
     uint32_t bind_count;
@@ -182,6 +206,14 @@ typedef struct nw_http_svr_cfg {
     /* seconds a client may take to send a whole request, counted from its
      * first byte; 408 is sent after that. 0 for the default, 10 */
     double request_timeout;
+    /* optional
+     *
+     * 0: no threads, everything runs on the thread that calls nw_loop_run.
+     * 1 and more: that many worker threads, see "several threads" above */
+    uint32_t thread_count;
+    /* with threads: max bytes that may wait for one worker thread, see
+     * nw_hub_cfg. 0 means no limit */
+    size_t queue_limit;
 } nw_http_svr_cfg;
 
 typedef struct nw_http_svr_type {
@@ -200,11 +232,25 @@ typedef struct nw_http_svr_type {
     /* optional, see nw_svr_type. refused requests (400, 413 ...) are
      * reported here too */
     void (*on_error_msg)(nw_ses *ses, const char *msg);
+    /* optional, with threads only
+     *
+     * called on every worker thread before it gets any connection, to set
+     * up what that thread needs (a nw_job, timers, clients ...). svr is
+     * the server of that thread, index is 0 .. thread_count - 1.
+     * return < 0 if that fails: nw_http_svr_create then fails */
+    int (*on_thread_start)(nw_http_svr *svr, uint32_t index);
+    /* optional, with threads only
+     *
+     * called on every worker thread before it ends, after its connections
+     * were closed */
+    void (*on_thread_stop)(nw_http_svr *svr, uint32_t index);
 } nw_http_svr_type;
 
 /* the fields are for reading only */
-typedef struct nw_http_svr {
-    /* the nw_svr underneath: raw_svr->clt_count, nw_svr_close_clt ... */
+struct nw_http_svr {
+    /* the nw_svr underneath: raw_svr->clt_count, nw_svr_close_clt ...
+     * with threads: the connections of this thread; in the server returned
+     * by nw_http_svr_create, the one that accepts, which has none */
     nw_svr *raw_svr;
     nw_http_svr_type type;
     /* the privdata given to nw_http_svr_create */
@@ -224,10 +270,19 @@ typedef struct nw_http_svr {
     /* the Date header, rebuilt once a second */
     time_t date_time;
     char date[40];
-} nw_http_svr;
+    /* with threads: the hub, NULL otherwise */
+    nw_hub *hub;
+    /* in the server of a worker thread: the one nw_http_svr_create returned */
+    struct nw_http_svr *front;
+    /* internal, only valid during nw_http_svr_create */
+    nw_http_svr_cfg *creating_cfg;
+};
 
-/* create a server. cfg and type are copied. return NULL if on_request is
- * missing, a bind is not SOCK_STREAM, or nw_svr_create fails */
+/* create a server. cfg and type are copied. with threads the worker
+ * threads are started here and the calling thread becomes the one that
+ * accepts: it calls the next three functions and runs nw_loop_run.
+ * return NULL if on_request is missing, a bind is not SOCK_STREAM, or the
+ * nw_svr (or nw_hub) underneath can't be created */
 nw_http_svr *nw_http_svr_create(nw_http_svr_cfg *cfg, nw_http_svr_type *type, void *privdata);
 
 /* bind and start accepting. return 0 or -1, see nw_svr_start */
@@ -236,8 +291,8 @@ int nw_http_svr_start(nw_http_svr *svr);
 /* stop accepting new connections. existing ones are served on */
 int nw_http_svr_stop(nw_http_svr *svr);
 
-/* close every connection and free the server. don't call it from a callback
- * of this server */
+/* close every connection and free the server; with threads, also end the
+ * worker threads. don't call it from a callback of this server */
 void nw_http_svr_release(nw_http_svr *svr);
 
 /* the server a session belongs to, for use in the callbacks */
@@ -257,7 +312,11 @@ nw_http_svr *nw_http_svr_of(nw_ses *ses);
 int nw_http_reply(nw_ses *ses, nw_http_response *rsp);
 
 /* the same for a connection known by its id (ses->id saved in on_request),
- * for answering later. return -1 as well if that connection is gone */
+ * for answering later. return -1 as well if that connection is gone.
+ * with threads, for a connection of another thread: the response is copied
+ * and queued; 0 then means queued (if the connection is gone or has no
+ * request waiting when its thread gets to it, the response is dropped),
+ * -1 that it could not be */
 int nw_http_reply_id(nw_http_svr *svr, uint64_t id, nw_http_response *rsp);
 
 /* shortcut for a response that is only a status and a body. content_type
