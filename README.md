@@ -2,7 +2,7 @@
 
 A small asynchronous network library for Linux, written in C on top of [libev](http://software.schmorp.de/pkg/libev.html).
 
-You describe a server or a client with a config struct and a handful of callbacks; asnw does the sockets, buffering, message framing, reconnecting and timers. One API covers five transports: TCP, UDP, and unix stream / datagram / seqpacket sockets (including file descriptor passing). An HTTP/1.1 server is included.
+You describe a server or a client with a config struct and a handful of callbacks; asnw does the sockets, buffering, message framing, reconnecting and timers. One API covers five transports: TCP, UDP, and unix stream / datagram / seqpacket sockets (including file descriptor passing). An HTTP/1.1 server and a WebSocket server are included.
 
 About 3,000 lines, no dependency other than libev, single threaded by design.
 
@@ -13,6 +13,7 @@ About 3,000 lines, no dependency other than libev, single threaded by design.
 | `nw_svr` | Server. One instance can listen on several addresses of different types at once. |
 | `nw_clt` | Client. Keeps a connection to one address and reconnects automatically. |
 | `nw_http` | HTTP/1.0 and 1.1 server on top of `nw_svr`, with zero copy request parsing. |
+| `nw_ws` | WebSocket server (RFC 6455) on top of `nw_svr`: messages, broadcast, pings. |
 | `nw_timer` | Call a function after an interval, once or repeatedly. |
 | `nw_state` | Table of pending states that expire, for request tracking with timeouts. |
 | `nw_job` | Thread pool. Work runs on worker threads, results come back on the loop thread. |
@@ -145,6 +146,68 @@ int main(void)
 - **Not supported:** TLS, HTTP/2, WebSocket, streamed responses, pipelining behind a request that is answered later. A request has to fit in `max_request_size` (64K by default).
 - **Strict.** Requests that are malformed or ambiguous about where they end are answered with 400 and the connection is closed. See the list at the top of `nw_http.h`.
 
+## A WebSocket server
+
+`nw_ws` is a WebSocket server on a port of its own. Clients upgrade with the usual handshake; after that you get whole messages and send whole messages.
+
+```c
+# include <string.h>
+# include "nw_ws.h"
+
+/* look at the upgrade request, return < 0 to refuse the client */
+static int on_upgrade(nw_ses *ses, nw_http_request *req)
+{
+    return strcmp(req->path.s, "/chat") == 0 ? 0 : -1;
+}
+
+static void on_open(nw_ses *ses)
+{
+    nw_ws_send_text(ses, "welcome");
+}
+
+/* data[size] is '\0', a text message is a C string */
+static void on_message(nw_ses *ses, bool binary, void *data, size_t size)
+{
+    if (binary)
+        nw_ws_close(ses, NW_WS_CLOSE_UNSUPPORTED, "text only");
+    else
+        nw_ws_broadcast_text(nw_ws_svr_of(ses), data);
+}
+
+int main(void)
+{
+    nw_svr_bind bind;
+    if (nw_sock_cfg_parse("tcp@127.0.0.1:8081", &bind.addr, &bind.sock_type) < 0)
+        return 1;
+
+    nw_ws_svr_cfg cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.bind_count = 1;
+    cfg.bind_arr = &bind;
+    cfg.buf_limit = 16;         /* a client that falls this far behind is dropped */
+    cfg.ping_interval = 20;
+
+    nw_ws_svr_type type;
+    memset(&type, 0, sizeof(type));
+    type.on_upgrade = on_upgrade;
+    type.on_open = on_open;
+    type.on_message = on_message;
+
+    nw_ws_svr *svr = nw_ws_svr_create(&cfg, &type, NULL);
+    if (svr == NULL || nw_ws_svr_start(svr) < 0)
+        return 1;
+
+    nw_loop_run();
+    return 0;
+}
+```
+
+- **Zero copy reads.** A message that comes in one frame is unmasked in place and handed over where it lies in the read buffer; only a message split into several frames is put together in a buffer of its own.
+- **Per connection data.** `on_privdata_alloc` / `on_privdata_free` give every connection a struct of yours, reached with `nw_ws_privdata(ses)`. The upgrade request is only valid in `on_upgrade`, so that is where to copy what you need from it.
+- **Pushing.** `nw_ws_broadcast_text` sends to everybody. To push to one client from outside its callbacks, keep `ses->id` and use `nw_ws_send_text_id(svr, id, ...)`.
+- **Keeping connections alive.** With `ping_interval` set the server pings silent clients; one that stays silent for `keep_alive_timeout` is closed.
+- **Not supported:** TLS, compression (it is declined, clients fall back), UTF-8 validation of text messages, plain HTTP on the same port. A message has to fit in `max_message_size` (64K by default).
+
 ## Addresses
 
 Addresses are written `protocol@address` and parsed with `nw_sock_cfg_parse`:
@@ -184,6 +247,7 @@ Built into `build/debug/test/`, `build/debug/wrapper/` and `build/debug/c1000k/`
 |---------|---------------|
 | `test/echo_server` | Echo server on any number of addresses: `echo_server 'tcp@127.0.0.1:1234' 'stream@/tmp/echo.sock'` |
 | `test/http_server` | HTTP server, try it with curl: `http_server 'tcp@127.0.0.1:8080'` |
+| `test/ws_server` | WebSocket chat room: `ws_server 'tcp@127.0.0.1:8081'`, then connect from a browser console |
 | `test/test_clt` | Client that pings a server once a second: `test_clt 'tcp@127.0.0.1:1234'` |
 | `test/listener_worker` | One process accepts and hands each connection to one of N worker processes by passing its fd: `listener_worker 'tcp@127.0.0.1:1234' 10` |
 | `test/test_timer`, `test/test_state` | Timer and state table |

@@ -3,6 +3,7 @@
 依赖（Ubuntu/Debian）：
 
     sudo apt-get install build-essential libev-dev valgrind cppcheck curl
+    pip install websockets        # 可选，WebSocket 互通测试用
 
 常用命令（在仓库根目录）：
 
@@ -48,4 +49,6 @@
 | t_http_parse | 请求解析：原地切分、各类非法请求对应的状态码、截断与三十万次变异输入下不越界 |
 | t_http_svr | HTTP 服务端：keep-alive、分段到达、chunked、HEAD、100-continue、按 id 异步回包、拒绝与超时、连接的各种结束方式 |
 | t_http_curl | 用 curl 做互通测试；没装 curl 时自动跳过 |
+| t_ws_svr | WebSocket 服务端：握手与各种拒绝、各长度档的消息、分片、控制帧、协议违规、双向关闭、广播、按 id 推送、ping 与空闲超时、变异帧 |
+| t_ws_interop | 用 Python websockets 库做互通测试；没装时自动跳过 |
 | t_rpc、t_rpc_decode、t_rpc_failover | ut_rpc 请求/应答、心跳保活；长度与 crc 校验；首个地址不可用时切换到下一个 |
