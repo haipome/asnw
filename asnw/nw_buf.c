@@ -9,21 +9,8 @@
 # define NW_BUF_POOL_INIT_SIZE 64
 # define NW_CACHE_INIT_SIZE    64
 
-/* what an idle pool or cache holds on to: about this many bytes worth of
- * objects, but not fewer or more of them than this */
-# define NW_KEEP_BYTES         (4 * 1024 * 1024)
-# define NW_KEEP_MIN           4
-# define NW_KEEP_MAX           1024
-
-static uint32_t keep_count(uint32_t size)
-{
-    uint32_t count = NW_KEEP_BYTES / (size ? size : 1);
-    if (count < NW_KEEP_MIN)
-        return NW_KEEP_MIN;
-    if (count > NW_KEEP_MAX)
-        return NW_KEEP_MAX;
-    return count;
-}
+/* how many objects an idle pool or cache holds on to */
+# define NW_KEEP_COUNT         64
 
 /*
  * an object comes back to a free list (the same code serves nw_buf_pool
@@ -103,7 +90,7 @@ nw_buf_pool *nw_buf_pool_create(uint32_t size)
 
     pool->size = size;
     pool->used = 0;
-    pool->keep = keep_count(size);
+    pool->keep = NW_KEEP_COUNT;
     pool->free = 0;
     pool->free_total = NW_BUF_POOL_INIT_SIZE;
     pool->free_arr = malloc(pool->free_total * sizeof(nw_buf *));
@@ -251,7 +238,7 @@ nw_cache *nw_cache_create(uint32_t size)
 
     cache->size = size;
     cache->used = 0;
-    cache->keep = keep_count(size);
+    cache->keep = NW_KEEP_COUNT;
     cache->free = 0;
     cache->free_total = NW_CACHE_INIT_SIZE;
     cache->free_arr = malloc(cache->free_total * sizeof(void *));

@@ -36,8 +36,7 @@ typedef struct nw_buf {
  * up - after a peak the bufs of the peak are given back to the allocator
  * as the load falls - while a steady load never reaches the allocator.
  *
- * keep is about 4M bytes worth of bufs, at least 4 and at most 1024 of
- * them: what an idle pool holds on to.
+ * keep is 64: what an idle pool holds on to.
  */
 typedef struct nw_buf_pool {
     /* capacity of every buf of this pool */

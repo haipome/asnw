@@ -30,13 +30,15 @@ int main(void)
     CHECK_EQ(again->wpos, 0);
     nw_buf_free(pool, again);
 
-    /* free list grows past its initial 64 slots */
+    /* many at once, all given back: an idle pool keeps 64 of them */
     nw_buf *many[200];
     for (int i = 0; i < 200; ++i)
         CHECK((many[i] = nw_buf_alloc(pool)) != NULL);
+    CHECK_EQ(pool->used, 200);
     for (int i = 0; i < 200; ++i)
         nw_buf_free(pool, many[i]);
-    CHECK_EQ(pool->free, 200);
+    CHECK_EQ(pool->used, 0);
+    CHECK_EQ(pool->free, 64);
 
     /* stream write spans bufs and honours the limit */
     nw_buf_list *list = nw_buf_list_create(pool, 3);
@@ -77,19 +79,23 @@ int main(void)
     }
     for (int i = 0; i < 200; ++i)
         nw_cache_free(cache, objs[i]);
-    CHECK_EQ(cache->free, 200);
-    CHECK(nw_cache_alloc(cache) == objs[199]);
-    nw_cache_free(cache, objs[199]);
+    CHECK_EQ(cache->free, 64);
+    /* what was freed last is what comes back first */
+    void *obj = nw_cache_alloc(cache);
+    CHECK_EQ(cache->free, 63);
+    nw_cache_free(cache, obj);
+    CHECK(nw_cache_alloc(cache) == obj);
+    nw_cache_free(cache, obj);
+    CHECK_EQ(cache->free, 64);
     nw_cache_release(cache);
 
     /*
-     * the free list follows the load down. bufs of 1M: an idle pool keeps
-     * 4 of them.
+     * the free list follows the load down. an idle pool keeps 64 bufs.
      */
-    pool = nw_buf_pool_create(1024 * 1024);
+    pool = nw_buf_pool_create(4096);
     CHECK(pool != NULL);
-    CHECK_EQ(pool->keep, 4);
-    static nw_buf *peak[300];
+    CHECK_EQ(pool->keep, 64);
+    static nw_buf *peak[3000];
     /* a steady load: nothing is given back to the allocator, the same
      * bufs go round */
     for (int i = 0; i < 20; ++i)
@@ -111,12 +117,12 @@ int main(void)
         }
         CHECK_EQ(pool->free, 0);
     }
-    /* a peak of 300, then back down to 10 in use */
-    for (int i = 20; i < 300; ++i)
+    /* a peak of 3000, then back down to 10 in use */
+    for (int i = 20; i < 3000; ++i)
         CHECK((peak[i] = nw_buf_alloc(pool)) != NULL);
-    CHECK_EQ(pool->used, 300);
+    CHECK_EQ(pool->used, 3000);
     uint32_t most_waiting = 0;
-    for (int i = 299; i >= 10; --i) {
+    for (int i = 2999; i >= 10; --i) {
         nw_buf_free(pool, peak[i]);
         /* never more waiting than in use, plus keep */
         CHECK(pool->free <= pool->used + pool->keep);
@@ -124,26 +130,25 @@ int main(void)
             most_waiting = pool->free;
     }
     CHECK_EQ(pool->used, 10);
-    CHECK_EQ(pool->free, 10 + 4);               /* not the 290 of the peak */
-    CHECK(most_waiting >= 140 && most_waiting <= 160);
-    CHECK(pool->free_total <= 128);             /* the array shrank too */
+    CHECK_EQ(pool->free, 10 + 64);              /* not the 2990 of the peak */
+    CHECK(most_waiting >= 1500 && most_waiting <= 1600);
+    CHECK(pool->free_total <= 512);             /* the array shrank too */
     /* all the way down: what an idle pool keeps */
     for (int i = 0; i < 10; ++i)
         nw_buf_free(pool, peak[i]);
     CHECK_EQ(pool->used, 0);
-    CHECK_EQ(pool->free, 4);
+    CHECK_EQ(pool->free, 64);
     /* and up again */
-    for (int i = 0; i < 300; ++i)
+    for (int i = 0; i < 3000; ++i)
         CHECK((peak[i] = nw_buf_alloc(pool)) != NULL);
-    for (int i = 0; i < 300; ++i)
+    for (int i = 0; i < 3000; ++i)
         nw_buf_free(pool, peak[i]);
-    CHECK_EQ(pool->free, 4);
+    CHECK_EQ(pool->free, 64);
     nw_buf_pool_release(pool);
 
-    /* small objects: up to 1024 are kept, a cache of connections on a
-     * quiet server never asks the allocator twice */
+    /* nw_cache does the same */
     cache = nw_cache_create(376);
-    CHECK_EQ(cache->keep, 1024);
+    CHECK_EQ(cache->keep, 64);
     static void *many_objs[5000];
     for (int i = 0; i < 5000; ++i)
         CHECK((many_objs[i] = nw_cache_alloc(cache)) != NULL);
@@ -153,10 +158,7 @@ int main(void)
         CHECK(cache->free <= cache->used + cache->keep);
     }
     CHECK_EQ(cache->used, 0);
-    CHECK_EQ(cache->free, 1024);
-    nw_cache_release(cache);
-    cache = nw_cache_create(64 * 1024);
-    CHECK_EQ(cache->keep, 64);
+    CHECK_EQ(cache->free, 64);
     nw_cache_release(cache);
 
     return 0;
