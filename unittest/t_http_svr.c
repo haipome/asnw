@@ -38,40 +38,38 @@ static void on_request(nw_ses *ses, nw_http_request *req)
 {
     request_count++;
     CHECK(nw_http_svr_of(ses) == svr);
-    CHECK(strlen(req->method.s) == req->method.len);
-    CHECK(strlen(req->path.s) == req->path.len);
 
-    if (strcmp(req->path.s, "/hello") == 0) {
+    if (strcmp(req->path, "/hello") == 0) {
         CHECK_EQ(nw_http_reply_text(ses, 200, "text/plain", "hello\n", 6), 0);
         /* a request is answered once */
         CHECK_EQ(nw_http_reply_text(ses, 200, "text/plain", "again\n", 6), -1);
-    } else if (strcmp(req->path.s, "/echo") == 0) {
+    } else if (strcmp(req->path, "/echo") == 0) {
         char count[16];
         snprintf(count, sizeof(count), "%u", req->header_count);
-        nw_http_str *type = nw_http_get_header(req, "content-type");
+        const char *type = nw_http_get_header(req, "content-type");
         nw_http_response rsp;
         memset(&rsp, 0, sizeof(rsp));
         rsp.status = 200;
-        nw_http_add_header(&rsp, "X-Method", req->method.s);
-        nw_http_add_header(&rsp, "X-Query", req->query.s);
+        nw_http_add_header(&rsp, "X-Method", req->method);
+        nw_http_add_header(&rsp, "X-Query", req->query);
         nw_http_add_header(&rsp, "X-Header-Count", count);
         if (type)
-            nw_http_add_header(&rsp, "Content-Type", type->s);
+            nw_http_add_header(&rsp, "Content-Type", type);
         /* the body is sent straight from the read buffer */
         rsp.body = req->body;
         rsp.body_size = req->body_size;
         CHECK_EQ(nw_http_reply(ses, &rsp), 0);
-    } else if (strcmp(req->path.s, "/async") == 0) {
+    } else if (strcmp(req->path, "/async") == 0) {
         async_ids[async_count++] = ses->id;
         if (!nw_timer_active(&async_timer)) {
             nw_timer_set(&async_timer, 0.05, false, on_async_timer, NULL);
             nw_timer_start(&async_timer);
         }
-    } else if (strcmp(req->path.s, "/never") == 0) {
+    } else if (strcmp(req->path, "/never") == 0) {
         /* no answer */
-    } else if (strcmp(req->path.s, "/big") == 0) {
+    } else if (strcmp(req->path, "/big") == 0) {
         CHECK_EQ(nw_http_reply_text(ses, 200, "application/octet-stream", big_body, BIG_SIZE), 0);
-    } else if (strcmp(req->path.s, "/close") == 0) {
+    } else if (strcmp(req->path, "/close") == 0) {
         nw_http_response rsp;
         memset(&rsp, 0, sizeof(rsp));
         rsp.status = 200;
@@ -79,9 +77,9 @@ static void on_request(nw_ses *ses, nw_http_request *req)
         rsp.body = "bye\n";
         rsp.body_size = 4;
         CHECK_EQ(nw_http_reply(ses, &rsp), 0);
-    } else if (strcmp(req->path.s, "/204") == 0) {
+    } else if (strcmp(req->path, "/204") == 0) {
         CHECK_EQ(nw_http_reply_text(ses, 204, NULL, NULL, 0), 0);
-    } else if (strcmp(req->path.s, "/headers") == 0) {
+    } else if (strcmp(req->path, "/headers") == 0) {
         nw_http_response rsp;
         memset(&rsp, 0, sizeof(rsp));
         rsp.status = 200;

@@ -23,22 +23,22 @@
 
 static void on_request(nw_ses *ses, nw_http_request *req)
 {
-    printf("%s %s %s%s (%zu bytes) from %s\n", req->method.s, req->path.s,
-            req->query.len ? "?" : "", req->query.s, req->body_size, nw_sock_human_addr(&ses->peer_addr));
+    printf("%s %s %s%s (%zu bytes) from %s\n", req->method, req->path,
+            req->query[0] ? "?" : "", req->query, req->body_size, nw_sock_human_addr(&ses->peer_addr));
     for (uint32_t i = 0; i < req->header_count; ++i) {
-        printf("    %s: %s\n", req->headers[i].name.s, req->headers[i].value.s);
+        printf("    %s: %s\n", req->headers[i].name, req->headers[i].value);
     }
 
-    if (strcmp(req->path.s, "/") == 0) {
+    if (strcmp(req->path, "/") == 0) {
         const char *body = "hello, this is asnw\n";
         nw_http_reply_text(ses, 200, "text/plain", body, strlen(body));
-    } else if (strcmp(req->path.s, "/echo") == 0) {
+    } else if (strcmp(req->path, "/echo") == 0) {
         /* send the request body back, with its content type */
-        nw_http_str *type = nw_http_get_header(req, "Content-Type");
+        const char *type = nw_http_get_header(req, "Content-Type");
         nw_http_response rsp;
         memset(&rsp, 0, sizeof(rsp));
         rsp.status = 200;
-        nw_http_add_header(&rsp, "Content-Type", type ? type->s : "application/octet-stream");
+        nw_http_add_header(&rsp, "Content-Type", type ? type : "application/octet-stream");
         rsp.body = req->body;
         rsp.body_size = req->body_size;
         nw_http_reply(ses, &rsp);

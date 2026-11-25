@@ -85,21 +85,21 @@ static void on_request(nw_ses *ses, nw_http_request *req)
     nw_http_svr *svr = nw_http_svr_of(ses);
     char body[128];
 
-    if (strcmp(req->path.s, "/where") == 0) {
+    if (strcmp(req->path, "/where") == 0) {
         int len = snprintf(body, sizeof(body), "%llu %d", (unsigned long long)ses->id, nw_hub_index(svr->hub));
         CHECK_EQ(nw_http_reply_text(ses, 200, "text/plain", body, len), 0);
-    } else if (strcmp(req->path.s, "/later") == 0) {
+    } else if (strcmp(req->path, "/later") == 0) {
         /* the main thread answers */
         pthread_mutex_lock(&lock);
         later_ids[later_count++] = ses->id;
         pthread_mutex_unlock(&lock);
-    } else if (strcmp(req->path.s, "/job") == 0) {
+    } else if (strcmp(req->path, "/job") == 0) {
         struct work *work = malloc(sizeof(struct work));
         work->svr = svr;
         work->id = ses->id;
-        work->value = atoi(req->query.s);
+        work->value = atoi(req->query);
         CHECK_EQ(nw_job_add(job, 0, work), 0);
-    } else if (strcmp(req->path.s, "/echo") == 0) {
+    } else if (strcmp(req->path, "/echo") == 0) {
         CHECK_EQ(nw_http_reply_text(ses, 200, "application/octet-stream", req->body, req->body_size), 0);
     } else {
         nw_http_reply_text(ses, 404, NULL, NULL, 0);

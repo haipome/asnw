@@ -44,13 +44,13 @@ static void on_privdata_free(void *svr, void *privdata)
 static int on_upgrade(nw_ses *ses, nw_http_request *req)
 {
     struct user *user = nw_ws_privdata(ses);
-    const char *name = strstr(req->query.s, "name=");
+    const char *name = strstr(req->query, "name=");
     snprintf(user->name, sizeof(user->name), "%s", name ? name + 5 : "anonymous");
     user->name[strcspn(user->name, "&")] = '\0';
     if (user->name[0] == '\0') {
         return -1;
     }
-    printf("upgrade: %s %s from %s as %s\n", req->method.s, req->path.s, nw_sock_human_addr(&ses->peer_addr), user->name);
+    printf("upgrade: %s %s from %s as %s\n", req->method, req->path, nw_sock_human_addr(&ses->peer_addr), user->name);
     return 0;
 }
 

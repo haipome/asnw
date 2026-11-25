@@ -54,36 +54,36 @@ int main(void)
     size_t size = strlen(get);
     char *data = copy_of(get, size);
     CHECK_EQ(nw_http_parse_request(data, size, &req), 0);
-    CHECK(strcmp(req.method.s, "GET") == 0);
-    CHECK_EQ(req.method.len, 3);
-    CHECK(strcmp(req.path.s, "/a b/c.txt") == 0);       /* percent decoded */
-    CHECK_EQ(req.path.len, 10);
-    CHECK(strcmp(req.query.s, "x=1&y=%32") == 0);       /* left as sent */
-    CHECK_EQ(req.query.len, 9);
+    CHECK(strcmp(req.method, "GET") == 0);
+    CHECK_EQ(strlen(req.method), 3);
+    CHECK(strcmp(req.path, "/a b/c.txt") == 0);       /* percent decoded */
+    CHECK_EQ(strlen(req.path), 10);
+    CHECK(strcmp(req.query, "x=1&y=%32") == 0);       /* left as sent */
+    CHECK_EQ(strlen(req.query), 9);
     CHECK_EQ(req.version_minor, 1);
     CHECK(req.keep_alive);
     CHECK_EQ(req.header_count, 4);
     CHECK_EQ(req.body_size, 0);
-    CHECK(strcmp(req.headers[0].name.s, "Host") == 0);
-    CHECK(strcmp(req.headers[0].value.s, "example.com") == 0);
-    CHECK(strcmp(req.headers[1].value.s, "curl/8.5.0") == 0);   /* white space trimmed */
-    CHECK_EQ(req.headers[1].value.len, 10);
-    CHECK(strcmp(req.headers[2].value.s, "") == 0);
-    CHECK_EQ(req.headers[2].value.len, 0);
+    CHECK(strcmp(req.headers[0].name, "Host") == 0);
+    CHECK(strcmp(req.headers[0].value, "example.com") == 0);
+    CHECK(strcmp(req.headers[1].value, "curl/8.5.0") == 0);   /* white space trimmed */
+    CHECK_EQ(strlen(req.headers[1].value), 10);
+    CHECK(strcmp(req.headers[2].value, "") == 0);
+    CHECK_EQ(strlen(req.headers[2].value), 0);
     /* every string lies inside the request: nothing was copied */
-    CHECK(req.method.s == data);
-    CHECK(req.path.s > data && req.path.s < data + size);
-    CHECK(req.headers[3].value.s > data && req.headers[3].value.s < data + size);
+    CHECK(req.method == data);
+    CHECK(req.path > data && req.path < data + size);
+    CHECK(req.headers[3].value > data && req.headers[3].value < data + size);
     /* lookup ignores case, in both directions */
-    CHECK(nw_http_get_header(&req, "host") == &req.headers[0].value);
-    CHECK(nw_http_get_header(&req, "ACCEPT") == &req.headers[3].value);
+    CHECK(nw_http_get_header(&req, "host") == req.headers[0].value);
+    CHECK(nw_http_get_header(&req, "ACCEPT") == req.headers[3].value);
     CHECK(nw_http_get_header(&req, "Accept-Encoding") == NULL);
     CHECK(nw_http_get_header(&req, "Hos") == NULL);
     CHECK(nw_http_header_is(&req.headers[1], "user-agent"));
     CHECK(!nw_http_header_is(&req.headers[1], "user"));
     /* the query can be decoded in place by the caller */
-    CHECK_EQ(nw_http_url_decode(req.query.s, req.query.len, true), 7);
-    CHECK(strcmp(req.query.s, "x=1&y=2") == 0);
+    CHECK_EQ(nw_http_url_decode(req.query, strlen(req.query), true), 7);
+    CHECK(strcmp(req.query, "x=1&y=2") == 0);
     free(data);
 
     /* a POST with a body: the body is a pointer and a size */
@@ -91,9 +91,9 @@ int main(void)
     size = strlen(post);
     data = copy_of(post, size);
     CHECK_EQ(nw_http_parse_request(data, size, &req), 0);
-    CHECK(strcmp(req.method.s, "POST") == 0);
-    CHECK_EQ(req.query.len, 0);
-    CHECK(strcmp(req.query.s, "") == 0);
+    CHECK(strcmp(req.method, "POST") == 0);
+    CHECK_EQ(strlen(req.query), 0);
+    CHECK(strcmp(req.query, "") == 0);
     CHECK_EQ(req.body_size, 11);
     CHECK(memcmp(req.body, "hello world", 11) == 0);
     CHECK((char *)req.body + req.body_size == data + size);
@@ -202,7 +202,7 @@ int main(void)
     data = copy_of(many, len + 2);
     CHECK_EQ(nw_http_parse_request(data, len + 2, &req), 0);
     CHECK_EQ(req.header_count, NW_HTTP_MAX_HEADERS);
-    CHECK(strcmp(req.headers[NW_HTTP_MAX_HEADERS - 1].value.s, "63") == 0);
+    CHECK(strcmp(req.headers[NW_HTTP_MAX_HEADERS - 1].value, "63") == 0);
     free(data);
     strcpy(many + len, "X-Last: 1\r\n\r\n");
     EXPECT(431, many);
@@ -274,16 +274,13 @@ int main(void)
         if (nw_http_parse_request(data, size, &req) == 0) {
             accepted++;
             char *end = data + size;
-            CHECK(req.method.s >= data && req.method.s + req.method.len < end);
-            CHECK(req.path.s >= data && req.path.s + req.path.len < end);
-            CHECK(req.query.s >= data && req.query.s + req.query.len < end);
-            CHECK(req.method.s[req.method.len] == '\0' && req.path.s[req.path.len] == '\0');
-            CHECK(req.query.s[req.query.len] == '\0');
+            CHECK(req.method >= data && req.method + strlen(req.method) < end);
+            CHECK(req.path >= data && req.path + strlen(req.path) < end);
+            CHECK(req.query >= data && req.query + strlen(req.query) < end);
             CHECK(req.header_count <= NW_HTTP_MAX_HEADERS);
             for (uint32_t i = 0; i < req.header_count; ++i) {
                 nw_http_header *h = &req.headers[i];
-                CHECK(h->name.s >= data && h->value.s >= h->name.s && h->value.s + h->value.len < end);
-                CHECK(strlen(h->name.s) == h->name.len && strlen(h->value.s) == h->value.len);
+                CHECK(h->name >= data && h->value > h->name && h->value + strlen(h->value) < end);
             }
             CHECK((char *)req.body >= data && (char *)req.body + req.body_size <= end);
             volatile char sum = 0;

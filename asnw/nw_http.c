@@ -270,10 +270,10 @@ int nw_http_url_decode(char *s, size_t len, bool plus_as_space)
 }
 
 /* does a comma separated header value hold this token */
-static bool has_token(nw_http_str *value, const char *token)
+static bool has_token(const char *value, const char *token)
 {
-    const char *pos = value->s;
-    const char *end = value->s + value->len;
+    const char *pos = value;
+    const char *end = value + strlen(value);
     while (pos < end) {
         const char *comma = memchr(pos, ',', end - pos);
         const char *item_end = comma ? comma : end;
@@ -319,25 +319,21 @@ static int parse_request_line(char *line, char *line_end, nw_http_request *req)
         return 505;
 
     *sp1 = '\0';
-    req->method.s = line;
-    req->method.len = sp1 - line;
+    req->method = line;
 
     *sp2 = '\0';
     char *question = memchr(target, '?', sp2 - target);
     char *path_end = question ? question : sp2;
     if (question) {
         *question = '\0';
-        req->query.s = question + 1;
-        req->query.len = sp2 - question - 1;
+        req->query = question + 1;
     } else {
-        req->query.s = sp2;
-        req->query.len = 0;
+        req->query = sp2;
     }
     int path_len = nw_http_url_decode(target, path_end - target, false);
     if (path_len < 0 || memchr(target, '\0', path_len) != NULL)
         return 400;
-    req->path.s = target;
-    req->path.len = path_len;
+    req->path = target;
 
     return 0;
 }
@@ -364,12 +360,10 @@ static int parse_header_line(char *line, char *line_end, nw_http_header *header)
     }
 
     *colon = '\0';
-    header->name.s = line;
-    header->name.len = colon - line;
+    header->name = line;
     /* value_end is at trailing white space or at the CR: free to overwrite */
     *(char *)value_end = '\0';
-    header->value.s = (char *)value;
-    header->value.len = value_end - value;
+    header->value = (char *)value;
 
     return 0;
 }
@@ -401,7 +395,7 @@ static int parse_request(nw_http_frame *f, char *data, nw_http_request *req)
     if (ret != 0)
         return ret;
 
-    nw_http_str *connection = NULL;
+    const char *connection = NULL;
     uint32_t host_count = 0;
     req->header_count = 0;
     char *pos = line_end + 2;
@@ -414,9 +408,9 @@ static int parse_request(nw_http_frame *f, char *data, nw_http_request *req)
         if (ret != 0)
             return ret;
         req->header_count++;
-        if (header->name.len == 10 && strcasecmp(header->name.s, "Connection") == 0)
-            connection = &header->value;
-        else if (header->name.len == 4 && strcasecmp(header->name.s, "Host") == 0)
+        if (strcasecmp(header->name, "Connection") == 0)
+            connection = header->value;
+        else if (strcasecmp(header->name, "Host") == 0)
             host_count++;
         pos = line_end + 2;
     }
@@ -457,16 +451,15 @@ int nw_http_parse_request(char *data, size_t size, nw_http_request *req)
 
 bool nw_http_header_is(nw_http_header *header, const char *name)
 {
-    return strcasecmp(header->name.s, name) == 0;
+    return strcasecmp(header->name, name) == 0;
 }
 
-nw_http_str *nw_http_get_header(nw_http_request *req, const char *name)
+char *nw_http_get_header(nw_http_request *req, const char *name)
 {
-    size_t len = strlen(name);
     for (uint32_t i = 0; i < req->header_count; ++i) {
         nw_http_header *header = &req->headers[i];
-        if (header->name.len == len && strcasecmp(header->name.s, name) == 0)
-            return &header->value;
+        if (strcasecmp(header->name, name) == 0)
+            return header->value;
     }
     return NULL;
 }
@@ -522,10 +515,8 @@ int nw_http_add_header(nw_http_response *rsp, const char *name, const char *valu
     if (rsp->header_count >= NW_HTTP_MAX_HEADERS)
         return -1;
     nw_http_header *header = &rsp->headers[rsp->header_count++];
-    header->name.s = (char *)name;
-    header->name.len = strlen(name);
-    header->value.s = (char *)value;
-    header->value.len = strlen(value);
+    header->name = (char *)name;
+    header->value = (char *)value;
     return 0;
 }
 
@@ -595,10 +586,11 @@ static int http_send(nw_http_svr *svr, nw_ses *ses, nw_http_conn *conn, nw_http_
     size_t need = 160 + strlen(reason);
     for (uint32_t i = 0; i < rsp->header_count; ++i) {
         nw_http_header *header = &rsp->headers[i];
-        if (header->name.len == 0 || has_line_break(header->name.s, header->name.len) || \
-                has_line_break(header->value.s, header->value.len))
+        size_t name_len = strlen(header->name);
+        size_t value_len = strlen(header->value);
+        if (name_len == 0 || has_line_break(header->name, name_len) || has_line_break(header->value, value_len))
             return -1;
-        need += header->name.len + header->value.len + 4;
+        need += name_len + value_len + 4;
     }
     if (need > svr->send_buf_size) {
         size_t new_size = svr->send_buf_size;
@@ -619,14 +611,7 @@ static int http_send(nw_http_svr *svr, nw_ses *ses, nw_http_conn *conn, nw_http_
             continue;
         if (nw_http_header_is(header, "Date"))
             has_date = true;
-        memcpy(buf + len, header->name.s, header->name.len);
-        len += header->name.len;
-        buf[len++] = ':';
-        buf[len++] = ' ';
-        memcpy(buf + len, header->value.s, header->value.len);
-        len += header->value.len;
-        buf[len++] = '\r';
-        buf[len++] = '\n';
+        len += sprintf(buf + len, "%s: %s\r\n", header->name, header->value);
     }
     if (!has_date)
         len += sprintf(buf + len, "Date: %s\r\n", http_date(svr));
@@ -713,8 +698,8 @@ struct reply_request {
     uint32_t reason_len;
     uint32_t header_count;
     size_t body_size;
-    /* name and value length of each header */
-    uint32_t lens[NW_HTTP_MAX_HEADERS][2];
+    /* the reason, the header names and values, each with its '\0', then
+     * the body */
     char data[];
 };
 
@@ -738,12 +723,10 @@ static void on_reply_request(nw_hub *hub, void *data, size_t size)
     }
     rsp.header_count = request->header_count;
     for (uint32_t i = 0; i < rsp.header_count; ++i) {
-        rsp.headers[i].name.s = p;
-        rsp.headers[i].name.len = request->lens[i][0];
-        p += request->lens[i][0];
-        rsp.headers[i].value.s = p;
-        rsp.headers[i].value.len = request->lens[i][1];
-        p += request->lens[i][1];
+        rsp.headers[i].name = p;
+        p += strlen(p) + 1;
+        rsp.headers[i].value = p;
+        p += strlen(p) + 1;
     }
     rsp.body = p;
     rsp.body_size = request->body_size;
@@ -757,7 +740,7 @@ static int post_reply(nw_http_svr *svr, uint64_t id, nw_http_response *rsp)
     size_t reason_len = rsp->reason ? strlen(rsp->reason) + 1 : 0;
     size_t size = sizeof(struct reply_request) + reason_len + rsp->body_size;
     for (uint32_t i = 0; i < rsp->header_count; ++i)
-        size += rsp->headers[i].name.len + rsp->headers[i].value.len;
+        size += strlen(rsp->headers[i].name) + strlen(rsp->headers[i].value) + 2;
 
     struct reply_request *request = malloc(size);
     if (request == NULL)
@@ -776,12 +759,12 @@ static int post_reply(nw_http_svr *svr, uint64_t id, nw_http_response *rsp)
     }
     for (uint32_t i = 0; i < rsp->header_count; ++i) {
         nw_http_header *header = &rsp->headers[i];
-        request->lens[i][0] = header->name.len;
-        request->lens[i][1] = header->value.len;
-        memcpy(p, header->name.s, header->name.len);
-        p += header->name.len;
-        memcpy(p, header->value.s, header->value.len);
-        p += header->value.len;
+        size_t name_size = strlen(header->name) + 1;
+        size_t value_size = strlen(header->value) + 1;
+        memcpy(p, header->name, name_size);
+        p += name_size;
+        memcpy(p, header->value, value_size);
+        p += value_size;
     }
     if (rsp->body_size > 0)
         memcpy(p, rsp->body, rsp->body_size);
@@ -938,7 +921,7 @@ static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
     nw_svr_set_clt_idle_timeout(svr->raw_svr, ses, 0);
     conn->pending = true;
     conn->keep_alive = req.keep_alive;
-    conn->head_request = (req.method.len == 4 && memcmp(req.method.s, "HEAD", 4) == 0);
+    conn->head_request = strcmp(req.method, "HEAD") == 0;
     svr->type.on_request(ses, &req);
 }
 

@@ -109,16 +109,16 @@ A client is built the same way from `nw_clt_cfg` and `nw_clt_type`, then `nw_clt
 
 static void on_request(nw_ses *ses, nw_http_request *req)
 {
-    if (strcmp(req->method.s, "GET") == 0 && strcmp(req->path.s, "/") == 0) {
+    if (strcmp(req->method, "GET") == 0 && strcmp(req->path, "/") == 0) {
         nw_http_reply_text(ses, 200, "text/plain", "hello\n", 6);
         return;
     }
-    if (strcmp(req->path.s, "/echo") == 0) {
-        nw_http_str *type = nw_http_get_header(req, "Content-Type");
+    if (strcmp(req->path, "/echo") == 0) {
+        const char *type = nw_http_get_header(req, "Content-Type");
         nw_http_response rsp;
         memset(&rsp, 0, sizeof(rsp));
         rsp.status = 200;
-        nw_http_add_header(&rsp, "Content-Type", type ? type->s : "application/octet-stream");
+        nw_http_add_header(&rsp, "Content-Type", type ? type : "application/octet-stream");
         rsp.body = req->body;
         rsp.body_size = req->body_size;
         nw_http_reply(ses, &rsp);
@@ -169,7 +169,7 @@ int main(void)
 /* look at the upgrade request, return < 0 to refuse the client */
 static int on_upgrade(nw_ses *ses, nw_http_request *req)
 {
-    return strcmp(req->path.s, "/chat") == 0 ? 0 : -1;
+    return strcmp(req->path, "/chat") == 0 ? 0 : -1;
 }
 
 static void on_open(nw_ses *ses)

@@ -69,15 +69,11 @@
  * refused with 400 and the connection is closed, never repaired.
  */
 
-/* a piece of the request. s[len] is always '\0' */
-typedef struct nw_http_str {
-    char *s;
-    uint32_t len;
-} nw_http_str;
-
+/* a header. in a request both are '\0' terminated strings that lie in
+ * the read buffer of the connection */
 typedef struct nw_http_header {
-    nw_http_str name;
-    nw_http_str value;
+    char *name;
+    char *value;
 } nw_http_header;
 
 /* a request or a response can carry this many headers */
@@ -85,12 +81,12 @@ typedef struct nw_http_header {
 
 typedef struct nw_http_request {
     /* as sent: GET, POST ... (case sensitive) */
-    nw_http_str method;
+    char *method;
     /* the part of the target before '?', percent decoded. it is NOT
      * normalized: check for ".." yourself before mapping it to a file */
-    nw_http_str path;
+    char *path;
     /* the part after '?', as sent (see nw_http_url_decode). empty if none */
-    nw_http_str query;
+    char *query;
     /* 1 for HTTP/1.1, 0 for HTTP/1.0 */
     int version_minor;
     /* does the client want the connection kept open after the response */
@@ -130,7 +126,7 @@ typedef struct nw_http_response {
 /* the value of a header, by name, case insensitive. NULL if the request
  * does not have it. if it was sent several times this is the first one,
  * walk req->headers with nw_http_header_is to get them all */
-nw_http_str *nw_http_get_header(nw_http_request *req, const char *name);
+char *nw_http_get_header(nw_http_request *req, const char *name);
 
 /* is this header called `name`, case insensitive */
 bool nw_http_header_is(nw_http_header *header, const char *name);

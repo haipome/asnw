@@ -132,12 +132,12 @@ static void base64_encode(const uint8_t *data, size_t size, char *out)
 }
 
 /* Sec-WebSocket-Accept for a Sec-WebSocket-Key. accept needs 29 bytes */
-static void accept_key(nw_http_str *key, char *accept)
+static void accept_key(const char *key, char *accept)
 {
     static const char guid[] = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
     char input[128];
     uint8_t digest[20];
-    int len = snprintf(input, sizeof(input), "%s%s", key->s, guid);
+    int len = snprintf(input, sizeof(input), "%s%s", key, guid);
     sha1(input, len, digest);
     base64_encode(digest, sizeof(digest), accept);
 }
@@ -472,11 +472,11 @@ static void refuse_upgrade(nw_ws_svr *svr, nw_ses *ses, nw_ws_conn *conn, int st
 }
 
 /* does a comma separated header value hold this token, case insensitive */
-static bool has_token(nw_http_str *value, const char *token)
+static bool has_token(const char *value, const char *token)
 {
     size_t token_size = strlen(token);
-    const char *pos = value->s;
-    const char *end = value->s + value->len;
+    const char *pos = value;
+    const char *end = value + strlen(value);
     while (pos < end) {
         const char *comma = memchr(pos, ',', end - pos);
         const char *item = pos;
@@ -497,12 +497,12 @@ static bool has_token(nw_http_str *value, const char *token)
  * that host and its subdomains, any scheme and port) or a full origin with
  * a scheme, which has to match exactly.
  */
-static bool origin_allowed(nw_http_str *origin, const char *allowed)
+static bool origin_allowed(const char *origin, const char *allowed)
 {
     if (strstr(allowed, "://") != NULL)
-        return strcasecmp(origin->s, allowed) == 0;
+        return strcasecmp(origin, allowed) == 0;
 
-    const char *host = strstr(origin->s, "://");
+    const char *host = strstr(origin, "://");
     if (host == NULL)
         return false;
     host += 3;
@@ -520,23 +520,23 @@ static bool origin_allowed(nw_http_str *origin, const char *allowed)
 /* the status an upgrade request has to be refused with, 0 if it is fine */
 static int check_upgrade(nw_ws_svr *svr, nw_http_request *req, bool *offered_protocol)
 {
-    if (strcmp(req->method.s, "GET") != 0 || req->version_minor < 1 || req->body_size != 0)
+    if (strcmp(req->method, "GET") != 0 || req->version_minor < 1 || req->body_size != 0)
         return 400;
-    nw_http_str *upgrade = nw_http_get_header(req, "Upgrade");
-    nw_http_str *connection = nw_http_get_header(req, "Connection");
+    const char *upgrade = nw_http_get_header(req, "Upgrade");
+    const char *connection = nw_http_get_header(req, "Connection");
     if (upgrade == NULL || connection == NULL)
         return 426;
     if (!has_token(upgrade, "websocket") || !has_token(connection, "upgrade"))
         return 426;
-    nw_http_str *version = nw_http_get_header(req, "Sec-WebSocket-Version");
-    if (version == NULL || strcmp(version->s, "13") != 0)
+    const char *version = nw_http_get_header(req, "Sec-WebSocket-Version");
+    if (version == NULL || strcmp(version, "13") != 0)
         return 426;
     /* 16 random bytes in base64 */
-    nw_http_str *key = nw_http_get_header(req, "Sec-WebSocket-Key");
-    if (key == NULL || key->len != 24)
+    const char *key = nw_http_get_header(req, "Sec-WebSocket-Key");
+    if (key == NULL || strlen(key) != 24)
         return 400;
 
-    nw_http_str *protocols = nw_http_get_header(req, "Sec-WebSocket-Protocol");
+    const char *protocols = nw_http_get_header(req, "Sec-WebSocket-Protocol");
     *offered_protocol = false;
     if (protocols != NULL && svr->protocol != NULL) {
         if (!has_token(protocols, svr->protocol))
@@ -544,7 +544,7 @@ static int check_upgrade(nw_ws_svr *svr, nw_http_request *req, bool *offered_pro
         *offered_protocol = true;
     }
     if (svr->origin != NULL) {
-        nw_http_str *origin = nw_http_get_header(req, "Origin");
+        const char *origin = nw_http_get_header(req, "Origin");
         if (origin == NULL || !origin_allowed(origin, svr->origin))
             return 403;
     }

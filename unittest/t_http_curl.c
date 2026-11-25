@@ -14,21 +14,21 @@ static char *big_body;
 
 static void on_request(nw_ses *ses, nw_http_request *req)
 {
-    if (strcmp(req->path.s, "/hello") == 0) {
+    if (strcmp(req->path, "/hello") == 0) {
         nw_http_reply_text(ses, 200, "text/plain", "hello\n", 6);
-    } else if (strcmp(req->path.s, "/echo") == 0) {
-        nw_http_str *agent = nw_http_get_header(req, "user-agent");
+    } else if (strcmp(req->path, "/echo") == 0) {
+        const char *agent = nw_http_get_header(req, "user-agent");
         nw_http_response rsp;
         memset(&rsp, 0, sizeof(rsp));
         rsp.status = 200;
-        nw_http_add_header(&rsp, "X-Method", req->method.s);
-        nw_http_add_header(&rsp, "X-Path", req->path.s);
-        nw_http_add_header(&rsp, "X-Query", req->query.s);
-        nw_http_add_header(&rsp, "X-Agent", agent ? agent->s : "none");
+        nw_http_add_header(&rsp, "X-Method", req->method);
+        nw_http_add_header(&rsp, "X-Path", req->path);
+        nw_http_add_header(&rsp, "X-Query", req->query);
+        nw_http_add_header(&rsp, "X-Agent", agent ? agent : "none");
         rsp.body = req->body;
         rsp.body_size = req->body_size;
         nw_http_reply(ses, &rsp);
-    } else if (strcmp(req->path.s, "/big") == 0) {
+    } else if (strcmp(req->path, "/big") == 0) {
         nw_http_reply_text(ses, 200, "application/octet-stream", big_body, BIG_SIZE);
     } else {
         nw_http_reply_text(ses, 404, "text/plain", "no such page\n", 13);

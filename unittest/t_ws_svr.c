@@ -45,12 +45,12 @@ static int on_upgrade(nw_ses *ses, nw_http_request *req)
     upgrade_count++;
     struct user *user = nw_ws_privdata(ses);
     CHECK(user != NULL);
-    snprintf(user->path, sizeof(user->path), "%s", req->path.s);
-    nw_http_str *token = nw_http_get_header(req, "x-token");
-    snprintf(user->token, sizeof(user->token), "%s", token ? token->s : "");
+    snprintf(user->path, sizeof(user->path), "%s", req->path);
+    const char *token = nw_http_get_header(req, "x-token");
+    snprintf(user->token, sizeof(user->token), "%s", token ? token : "");
     /* nothing can be sent before the handshake is answered */
     CHECK_EQ(nw_ws_send_text(ses, "too early"), -1);
-    return strcmp(req->path.s, "/deny") == 0 ? -1 : 0;
+    return strcmp(req->path, "/deny") == 0 ? -1 : 0;
 }
 
 static void on_open(nw_ses *ses)
