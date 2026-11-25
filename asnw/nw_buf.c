@@ -41,6 +41,8 @@ void nw_buf_shift(nw_buf *buf)
 
 nw_buf_pool *nw_buf_pool_create(uint32_t size)
 {
+    if (size == 0)
+        return NULL;
     nw_buf_pool *pool = malloc(sizeof(nw_buf_pool));
     if (pool == NULL)
         return NULL;

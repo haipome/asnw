@@ -4,16 +4,18 @@ A small asynchronous network library for Linux, written in C on top of [libev](h
 
 You describe a server or a client with a config struct and a handful of callbacks; asnw does the sockets, buffering, message framing, reconnecting and timers. One API covers five transports: TCP, UDP, and unix stream / datagram / seqpacket sockets (including file descriptor passing). An HTTP/1.1 server and a WebSocket server are included.
 
-About 3,000 lines, no dependency other than libev, single threaded by design.
+The core is about 4,000 lines and the two protocol servers another 2,400. No dependency other than libev. Single threaded by design.
+
+The headers in `asnw/` are the reference: every struct field, callback and function is documented there, and each header starts with an overview of its module.
 
 ## Modules
 
+The core:
+
 | Module | What it is |
 |--------|------------|
-| `nw_svr` | Server. One instance can listen on several addresses of different types at once. |
+| `nw_svr` | Server. One instance can listen on several addresses of different types at once. Finds connections by id, walks them, times them out and closes them in an orderly way. |
 | `nw_clt` | Client. Keeps a connection to one address and reconnects automatically. |
-| `nw_http` | HTTP/1.0 and 1.1 server on top of `nw_svr`, with zero copy request parsing. |
-| `nw_ws` | WebSocket server (RFC 6455) on top of `nw_svr`: messages, broadcast, pings. |
 | `nw_timer` | Call a function after an interval, once or repeatedly. |
 | `nw_state` | Table of pending states that expire, for request tracking with timeouts. |
 | `nw_job` | Thread pool. Work runs on worker threads, results come back on the loop thread. |
@@ -22,6 +24,14 @@ About 3,000 lines, no dependency other than libev, single threaded by design.
 | `nw_sock` | Address parsing and socket option helpers. |
 | `nw_evt` | The event loop (`nw_loop_run`, `nw_loop_break`). |
 | `nw_ses` | A session: one socket and its buffers. Used by `nw_svr` and `nw_clt`; you receive it in callbacks. |
+
+Protocols built on the core, which knows nothing about them:
+
+| Module | What it is |
+|--------|------------|
+| `nw_http` | HTTP/1.0 and 1.1 server, with zero copy request parsing. |
+| `nw_ws` | WebSocket server (RFC 6455): messages, broadcast, pings. |
+| `wrapper/ut_rpc` | A simple binary RPC protocol, server and client, with heartbeats and failover. Kept outside the library as an example of wrapping it. |
 
 ## Build
 
@@ -231,11 +241,15 @@ The protocol name is case insensitive. Hosts are numeric addresses; there is no 
 
 **Send buffering.** `nw_ses_send` writes directly when it can and queues the rest. `buf_limit` caps that queue in units of `max_pkg_size` buffers; the default 0 means unlimited, so set a limit on servers that face untrusted clients. Datagram sends are never queued: a full socket buffer is reported as an error.
 
-**Timeouts and closing.** `idle_timeout` in the server config (optional) drops connections that send nothing for that long; `on_timeout` lets you decide instead, and a connection can be given its own timeout or a deadline. `nw_svr_close_clt` closes at once and drops unsent data. To say something last and have it arrive, send it and call `nw_svr_shutdown_clt`.
+**Timeouts.** `idle_timeout` in the server config (optional) drops connections that send nothing for that long. `on_timeout` lets you decide instead: left open, a silent connection times out again one period later, and `ses->active_time` tells how long it has been silent, which is all a "ping, then give up" policy needs. A single connection can be given its own timeout (`nw_svr_set_clt_idle_timeout`) or a deadline that activity does not push back (`nw_svr_set_clt_deadline`). Timeouts are accurate to about a second.
+
+**Closing.** `nw_svr_close_clt` closes at once and drops unsent data. To say something last and have it arrive, send it and call `nw_svr_shutdown_clt`. Either way `on_connection_close` is called exactly once, and by then the connection is already out of the server: it is not counted, not found by id, not visited by the iterator, and sending on it returns -1. So the callback is free to send to the other connections or close them; "tell everybody that this one left" needs no care.
+
+**Walking the connections.** `nw_svr_iter_init` / `nw_svr_next` visit every connection of a server. Connections may be closed while walking, the current one or any other.
 
 **Datagram servers.** The session passed to `on_recv_pkg` is the listening one, and `nw_ses_send` replies to the sender of the datagram being handled. Reply inside the callback, or copy `ses->peer_addr`.
 
-**Clients.** A stream client retries every `reconnect_timeout` seconds (default 1.0), which is also its connect timeout. Return > 0 from `on_close` to retry at once. Check `nw_clt_connected` before sending. A datagram client is usable right after `nw_clt_start` and ignores UDP packets from any address other than its server.
+**Clients.** A stream client retries every `reconnect_timeout` seconds (default 1.0), which is also how long a connect attempt may take. `on_close` is called once per lost connection or failed attempt; return > 0 from it to retry at once, or call `nw_clt_close` from it to stay closed. Check `nw_clt_connected` before sending. A datagram client is usable right after `nw_clt_start` and ignores UDP packets from any address other than its server.
 
 **Threads.** Everything runs on the thread that calls `nw_loop_run`, and the library is not thread safe. Use `nw_job` to move blocking work to worker threads; its `on_finish` callback runs back on the loop thread.
 
@@ -264,6 +278,7 @@ make check            # unit tests
 make check-asan       # under AddressSanitizer and UBSan
 make check-tsan       # thread pool under ThreadSanitizer
 make check-valgrind   # under valgrind
+make coverage         # line coverage per source file
 make lint             # gcc -Wextra and cppcheck
 ```
 

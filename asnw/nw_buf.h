@@ -86,7 +86,8 @@ void nw_buf_shift(nw_buf *buf);
 
 /* nw_buf_pool operation */
 
-/* create a pool of bufs with `size` bytes of data each. NULL if out of memory */
+/* create a pool of bufs with `size` bytes of data each. NULL if size is 0
+ * or out of memory */
 nw_buf_pool *nw_buf_pool_create(uint32_t size);
 /* get an empty buf, reused or newly allocated. NULL if out of memory */
 nw_buf *nw_buf_alloc(nw_buf_pool *pool);

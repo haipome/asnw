@@ -134,8 +134,11 @@ typedef struct nw_ws_svr_type {
     void (*on_message)(nw_ses *ses, bool binary, void *data, size_t size);
     /* optional
      *
-     * called when a connection that completed the handshake is closed,
-     * whatever the reason. nw_ws_privdata is still valid; don't send */
+     * called once when a connection that completed the handshake is
+     * closed, whatever the reason. nw_ws_privdata is still valid. the
+     * connection itself is already out of the server: sending to it
+     * returns -1 and a broadcast does not include it, so "tell the others
+     * that this one left" is simply a broadcast from here */
     void (*on_close)(nw_ses *ses);
     /* optional
      *

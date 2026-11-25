@@ -70,9 +70,14 @@ static void on_message(nw_ses *ses, bool binary, void *data, size_t size)
     printf("%s (to %d)\n", text, count);
 }
 
+/* the connection that is closing is already out of the server, so the
+ * broadcast reaches everybody else */
 static void on_close(nw_ses *ses)
 {
     struct user *user = nw_ws_privdata(ses);
+    char text[128];
+    snprintf(text, sizeof(text), "* %s left", user->name);
+    nw_ws_broadcast_text(nw_ws_svr_of(ses), text);
     printf("close: %s\n", user->name);
 }
 

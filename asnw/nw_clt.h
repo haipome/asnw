@@ -98,7 +98,11 @@ typedef struct nw_clt_type {
      * ses->peer_addr.
      * return > 0 to connect again at once (on the next turn of the loop),
      * anything else to wait reconnect_timeout first. the return value is
-     * ignored for nw_clt_close */
+     * ignored for nw_clt_close.
+     *
+     * the connection is over when this is called: nw_ses_send returns -1.
+     * calling nw_clt_close from here means "stay closed": no reconnect is
+     * scheduled */
     int (*on_close)(nw_ses *ses);
     /* optional
      *
@@ -139,6 +143,9 @@ typedef struct nw_clt {
     bool on_connect_called;
     /* a unix dgram client binds a private socket file, removed on close */
     bool local_path_bound;
+    /* on_close is running; nw_clt_close was called from inside it */
+    bool in_on_close;
+    bool close_requested;
     double reconnect_timeout;
     uint32_t read_mem;
     uint32_t write_mem;

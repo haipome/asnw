@@ -12,6 +12,7 @@
     make check-asan       # ASan + UBSan 下运行，并运行已知缺陷复现用例 kb_*
     make check-tsan       # TSan 下运行线程池测试
     make check-valgrind   # valgrind memcheck
+    make coverage         # 覆盖率构建下跑测试，按文件打印行覆盖率
     make lint             # gcc -Wextra + cppcheck
     make check-asan T=t_echo      # 只跑一个
     make VARIANT=release          # -O2 构建到 build/release
@@ -41,8 +42,10 @@
 | t_echo | tcp、tcp/ipv6、udp、unix stream/dgram/seqpacket 回显，随后 release；stream 约 2MB |
 | t_seqpacket_fd、t_seqpacket_queue | fd 传递；写队列积压时不丢包 |
 | t_clt_reconnect、t_clt_connect_fail、t_clt_release | 重试与重连；同步失败只处理一次、立即重连不递归；各时点 release |
+| t_clt_close_callback | `on_close` 里发送不递归、`on_close` 里调 `nw_clt_close` 表示不再重连、连接迟迟无应答时超时重试 |
 | t_svr_get_clt | 按 id 找回连接；连接关闭、内存被新连接复用后旧 id 查不到 |
 | t_svr_timeout | 空闲超时（全局与单连接）、截止时间、on_timeout 回调、有序关闭时最后的数据不丢 |
+| t_svr_close_callback | 关闭回调里发送、重复关闭、关闭其他连接（连锁）都只触发一次回调；遍历时任意连接被关闭都安全 |
 | t_svr_release | 空闲、带活动连接、多地址 server 的 release；bind 不删除普通文件 |
 | t_accept_emfile | fd 耗尽时拒绝连接而不空转，恢复后正常 |
 | t_sigpipe | 对端已关闭时发送不触发 SIGPIPE |
@@ -53,3 +56,25 @@
 | t_ws_svr | WebSocket 服务端：握手与各种拒绝、各长度档的消息、分片、控制帧、协议违规、双向关闭、广播、按 id 推送、ping 与空闲超时、变异帧 |
 | t_ws_interop | 用 Python websockets 库做互通测试；没装时自动跳过 |
 | t_rpc、t_rpc_decode、t_rpc_failover | ut_rpc 请求/应答、心跳保活；长度与 crc 校验；首个地址不可用时切换到下一个 |
+
+## 覆盖率与已知的测试缺口
+
+`make coverage` 的结果目前整体在 85% 以上。没有覆盖到的主要是：
+
+- 各处内存分配失败的分支（没有做故障注入）。
+- WebSocket 的握手超时（固定 10 秒，测试要等这么久；它用的截止时间机制本身在 `t_svr_timeout` 里测过）。
+- `nw_ws.c` 里 SHA-1 的多块路径：握手的输入固定 60 字节，走不到。这份 SHA-1 只为握手服务，不要当通用实现对外使用。
+- `nw_evt.c` 的致命错误处理和 `nw_loop_break_later`。
+- IPv6 的端到端路径在没有 IPv6 回环地址的机器上会被跳过。
+- WebSocket 没有跑过 Autobahn 测试套件（需要 Docker）。
+
+## 写回调时的几条约定
+
+这些在头文件里都有说明，集中列一下：
+
+- 所有回调都在调用 `nw_loop_run` 的线程上执行；只有 `nw_job` 的 `on_job` 在工作线程上。
+- `decode_pkg` 里不能发送、不能关闭连接。
+- 传给回调的数据（消息、HTTP 请求、WebSocket 消息）只在回调期间有效。
+- 跨异步保存 `ses->id` 而不是 `nw_ses *`，回来时用 `nw_svr_get_clt` 取。
+- 关闭回调（`on_connection_close`、`on_close`）被调用时，这个连接已经从 server 里摘掉：对它发送返回 -1，再次关闭无效；对其他连接发送、关闭都可以。
+- 不要在某个 server 或 client 自己的回调里 release 它本身。

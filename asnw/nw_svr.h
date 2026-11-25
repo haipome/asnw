@@ -145,10 +145,16 @@ typedef struct nw_svr_type {
     void (*on_new_connection)(nw_ses *ses);
     /* optional
      *
-     * called when a connection is about to be closed, whatever the reason:
-     * the peer closed, an error, nw_svr_close_clt or nw_svr_release. ses is
-     * still readable but must not be used to send. the last callback for
-     * that connection */
+     * called when a connection is closed, whatever the reason: the peer
+     * closed, an error, a timeout, nw_svr_close_clt or nw_svr_release. the
+     * last callback for that connection, called exactly once.
+     *
+     * ses can still be read (id, peer_addr, privdata) to clean up after
+     * it, but the connection is already out of the server: clt_count no
+     * longer counts it, nw_svr_get_clt does not find it, the iterator does
+     * not visit it, nw_ses_send on it returns -1 and closing it again does
+     * nothing. everything else is allowed, including sending to and
+     * closing other connections */
     void (*on_connection_close)(nw_ses *ses);
     /* must
      *
@@ -182,7 +188,7 @@ typedef struct nw_svr_type {
      * tells for how long it has been silent in total. that makes
      * "ping after 20 seconds, give up after 60" a few lines.
      *
-     * the callback may close this connection but no other one */
+     * the callback may close this connection, and others too */
     void (*on_timeout)(nw_ses *ses);
     /* optional, if set on_privdata_free must be set too
      *
@@ -304,10 +310,11 @@ int nw_svr_send(nw_svr *svr, uint64_t id, const void *data, size_t size);
  *       ...
  *   }
  *
- * closing the connection just returned (nw_svr_close_clt) is allowed, so a
- * loop that drops idle connections needs no special care. closing other
- * connections, or a new connection being accepted (it can't happen inside
- * the loop unless you call nw_svr_add_clt_fd), invalidates the iterator.
+ * connections may be closed while walking, the one just returned or any
+ * other (say, by a close callback that tells the others and finds one of
+ * them broken): the ones that are gone are skipped. the only thing that
+ * invalidates the iterator is a new connection, which can't appear inside
+ * the loop unless you call nw_svr_add_clt_fd.
  * dgram binds have no connections and are not visited.
  */
 void nw_svr_iter_init(nw_svr_iterator *iter, nw_svr *svr);

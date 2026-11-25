@@ -99,6 +99,9 @@ static void on_close(nw_ses *ses)
 {
     close_count++;
     CHECK(nw_ws_privdata(ses) != NULL);
+    /* the connection is over: sending fails, quietly */
+    CHECK_EQ(nw_ws_send_text(ses, "too late"), -1);
+    nw_ws_close(ses, NW_WS_CLOSE_NORMAL, NULL);
 }
 
 static void on_error_msg(nw_ses *ses, const char *msg)

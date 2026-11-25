@@ -395,16 +395,28 @@ void nw_svr_close_clt(nw_svr *svr, nw_ses *ses)
     if (ses->ses_type != NW_SES_TYPE_COMMON)
         return;
 
+    /*
+     * take the connection out of the server BEFORE telling the application.
+     * whatever on_connection_close does then - send on this connection,
+     * close it again, close others whose own callbacks look for this one -
+     * cannot get back in here for it: it is not found by id any more, a
+     * second close stops at the line below, and sending fails quietly
+     * instead of reporting an error that would close it once more.
+     */
+    if (nw_dict_del(svr->clt_dict, ses->id) < 0)
+        return;
+    svr->clt_count--;
+    ses->closing = true;
+    nw_ses_stop(ses);
+
     if (svr->type.on_connection_close) {
         svr->type.on_connection_close(ses);
     }
-    nw_dict_del(svr->clt_dict, ses->id);
     if (ses->privdata) {
         svr->type.on_privdata_free(svr, ses->privdata);
     }
     nw_ses_release(ses);
     nw_cache_free(svr->clt_cache, ses);
-    svr->clt_count--;
 }
 
 nw_ses *nw_svr_get_clt(nw_svr *svr, uint64_t id)
@@ -427,8 +439,15 @@ void nw_svr_iter_init(nw_svr_iterator *iter, nw_svr *svr)
 
 nw_ses *nw_svr_next(nw_svr_iterator *iter)
 {
-    nw_dict_entry *entry = nw_dict_next(&iter->iter);
-    return entry ? entry->val : NULL;
+    /* connections closed since the iterator got here (by a callback of the
+     * loop that is running) are skipped: a closed session has lost its id */
+    nw_dict_entry *entry;
+    while ((entry = nw_dict_next(&iter->iter)) != NULL) {
+        nw_ses *ses = entry->val;
+        if (ses->id == entry->key)
+            return ses;
+    }
+    return NULL;
 }
 
 static bool is_clt(nw_ses *ses)

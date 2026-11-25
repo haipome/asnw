@@ -194,7 +194,8 @@ typedef struct nw_http_svr_type {
     void (*on_request)(nw_ses *ses, nw_http_request *req);
     /* optional, see nw_svr_type */
     void (*on_new_connection)(nw_ses *ses);
-    /* optional, see nw_svr_type */
+    /* optional, see nw_svr_type. the connection is already out of the
+     * server when this is called, a reply to it returns -1 */
     void (*on_connection_close)(nw_ses *ses);
     /* optional, see nw_svr_type. refused requests (400, 413 ...) are
      * reported here too */

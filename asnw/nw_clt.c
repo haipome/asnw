@@ -71,13 +71,23 @@ static void reconnect_later(nw_clt *clt, double delay)
     nw_timer_start(&clt->timer);
 }
 
+static int call_on_close(nw_clt *clt);
+static int clt_close(nw_clt *clt);
+
+/* the connect attempt got no answer in time: give it up and try again */
 static void on_connect_timeout(nw_timer *timer, void *privdata)
 {
     nw_clt *clt = (nw_clt *)privdata;
-    if (!clt->on_connect_called) {
-        nw_clt_close(clt);
-        nw_clt_start(clt);
+    if (clt->on_connect_called)
+        return;
+    call_on_close(clt);
+    clt_close(clt);
+    if (clt->close_requested) {
+        clt->close_requested = false;
+        return;
     }
+    if (nw_clt_start(clt) < 0)
+        reconnect_later(clt, clt->reconnect_timeout);
 }
 
 static void watch_connect(nw_clt *clt)
@@ -112,13 +122,32 @@ static int clt_close(nw_clt *clt)
  * (a zero delay timer) so a connect that keeps failing synchronously can
  * never recurse.
  */
-static void close_and_reconnect(nw_clt *clt)
+/* tell the application that the connection is over. while it is told the
+ * session refuses to send, quietly: a send that failed with an error would
+ * bring us right back here for the same connection */
+static int call_on_close(nw_clt *clt)
 {
     int ret = 0;
     if (clt->type.on_close) {
+        clt->in_on_close = true;
+        clt->ses.closing = true;
         ret = clt->type.on_close(&clt->ses);
+        clt->in_on_close = false;
     }
+    return ret;
+}
+
+static void close_and_reconnect(nw_clt *clt)
+{
+    if (clt->in_on_close)
+        return;
+    int ret = call_on_close(clt);
     clt_close(clt);
+    if (clt->close_requested) {
+        /* on_close called nw_clt_close: stay closed */
+        clt->close_requested = false;
+        return;
+    }
     reconnect_later(clt, ret > 0 ? 0 : clt->reconnect_timeout);
 }
 
@@ -270,9 +299,14 @@ int nw_clt_start(nw_clt *clt)
 
 int nw_clt_close(nw_clt *clt)
 {
-    if (clt->type.on_close) {
-        clt->type.on_close(&clt->ses);
+    if (clt->in_on_close) {
+        /* from inside on_close: the close in progress finishes the job,
+         * and does not reconnect */
+        clt->close_requested = true;
+        return 0;
     }
+    call_on_close(clt);
+    clt->close_requested = false;
     return clt_close(clt);
 }
 

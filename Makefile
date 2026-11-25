@@ -7,6 +7,8 @@
 #                         reproducers for open bugs (unittest/kb_*.c), if any
 #   make check-tsan       thread pool test under ThreadSanitizer
 #   make check-valgrind   unit tests under valgrind memcheck
+#   make coverage         run the tests in a coverage build, print line
+#                         coverage per source file
 #   make lint             gcc -Wextra and cppcheck over the library
 #   make VARIANT=release  optimized build in build/release
 #   make clean
@@ -22,8 +24,10 @@ CFLAGS_debug   := -O0
 CFLAGS_release := -O2
 CFLAGS_asan    := -O1 -fno-omit-frame-pointer -fsanitize=address,undefined -fno-sanitize-recover=undefined
 CFLAGS_tsan    := -O1 -fno-omit-frame-pointer -fsanitize=thread
+CFLAGS_cov     := -O0 --coverage
 LDFLAGS_asan   := -fsanitize=address,undefined
 LDFLAGS_tsan   := -fsanitize=thread
+LDFLAGS_cov    := --coverage
 
 CFLAGS  := $(CFLAGS_COMMON) $(CFLAGS_$(VARIANT))
 LDFLAGS := $(LDFLAGS_$(VARIANT))
@@ -43,7 +47,7 @@ EXAMPLES    := $(patsubst %.c,$(B)/%,$(EXAMPLE_SRC))
 UT_SRC := $(wildcard unittest/*.c)
 UT_BIN := $(patsubst %.c,$(B)/%,$(UT_SRC))
 
-.PHONY: all lib examples tests check check-asan check-tsan check-valgrind lint clean
+.PHONY: all lib examples tests check check-asan check-tsan check-valgrind coverage lint clean
 .SECONDARY:
 
 all: lib examples tests
@@ -75,6 +79,11 @@ check-tsan:
 
 check-valgrind: tests
 	@unittest/run.sh $(B) valgrind $(T)
+
+coverage:
+	@find build/cov -name '*.gcda' -delete 2>/dev/null || true
+	@$(MAKE) --no-print-directory VARIANT=cov check
+	@unittest/coverage.sh build/cov
 
 lint:
 	$(CC) -std=gnu11 -Wall -Wextra -Wno-unused-parameter -Wno-pointer-arith -fsyntax-only $(LIB_SRC)
