@@ -131,6 +131,18 @@ static void raw_on_recv_pkg(nw_ses *ses, void *data, size_t size)
     CHECK_EQ(sscanf(line, "%7s %127s HTTP/1.1", method, path), 2);
     CHECK(strcmp(method, "GET") == 0 || strcmp(method, "POST") == 0);
 
+    if (strncmp(path, "/headers/", 9) == 0) {
+        /* that many headers, the one that says how the body ends last */
+        int count = atoi(path + 9);
+        static char rsp[16384];
+        int n = snprintf(rsp, sizeof(rsp), "HTTP/1.1 200 OK\r\n");
+        for (int i = 0; i < count - 1; ++i)
+            n += snprintf(rsp + n, sizeof(rsp) - n, "X-Pad-%d: v\r\n", i);
+        n += snprintf(rsp + n, sizeof(rsp) - n, "Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n");
+        CHECK_EQ(nw_ses_send(ses, rsp, n), 0);
+        nw_svr_shutdown(ses->svr, ses);
+        return;
+    }
     if (strcmp(path, "/manychunks") == 0) {
         /* sent piece by piece, so that it is also read piece by piece */
         const char *head = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
@@ -513,6 +525,17 @@ int main(void)
     free(huge);
     ut_run_for(0.1);
     CHECK_EQ(r.calls, 0);
+
+    /* as many headers as there is room for: fine. one more: refused, as
+     * the one left out could be the one that says where the body ends (it
+     * was, and the chunk sizes came back as part of a body, with no error) */
+    fetch(&r, 5.0, "http://127.0.0.1:%d/headers/%d", raw_port, NW_REQ_MAX_HEADERS);
+    CHECK_BODY(&r, "hello");
+    CHECK_EQ(r.headers, NW_REQ_MAX_HEADERS);
+    fetch(&r, 5.0, "http://127.0.0.1:%d/headers/%d", raw_port, NW_REQ_MAX_HEADERS + 1);
+    CHECK_EQ(r.error, NW_REQ_ERR_RESPONSE);
+    fetch(&r, 5.0, "http://127.0.0.1:%d/headers/%d", raw_port, 200);
+    CHECK_EQ(r.error, NW_REQ_ERR_RESPONSE);
 
     /* responses that are not */
     static const struct {

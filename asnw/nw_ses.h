@@ -81,6 +81,10 @@ typedef struct nw_ses {
      * more can be sent on it and what it still receives is thrown away */
     bool closing;
     bool write_shut;
+    /* the peer has sent all it had to (read returned 0) while there was
+     * still something to send to it: nothing more is read, and the session
+     * is closed when the rest is out or cannot be sent */
+    bool peer_done;
     double close_deadline;
     /* flow control, see nw_ses_pending and nw_ses_pause_read */
     size_t write_pending;

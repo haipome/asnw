@@ -48,6 +48,7 @@
  * body of a POST */
 # define NW_REQ_MAX_SIZE (16 * 1024 * 1024)
 # define NW_REQ_MAX_URL 4096
+/* a response with more headers than this is refused */
 # define NW_REQ_MAX_HEADERS 64
 /* the timeout when 0 is given, in seconds */
 # define NW_REQ_DEFAULT_TIMEOUT 10.0

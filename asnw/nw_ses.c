@@ -31,15 +31,15 @@ static void watch_stop(nw_ses *ses)
     }
 }
 
-/* a session whose reading is paused (nw_ses_pause_read) watches for
- * nothing, or for writable only */
+/* a session whose reading is paused (nw_ses_pause_read), or whose peer
+ * has nothing more to say, watches for nothing, or for writable only */
 static void watch_read(nw_ses *ses)
 {
     if (ev_is_active(&ses->ev)) {
         ev_io_stop(ses->loop, &ses->ev);
     }
     ev_io_init(&ses->ev, libev_on_read_write_evt, ses->sockfd, EV_READ);
-    if (!ses->read_paused)
+    if (!ses->read_paused && !ses->peer_done)
         ev_io_start(ses->loop, &ses->ev);
 }
 
@@ -48,7 +48,8 @@ static void watch_read_write(nw_ses *ses)
     if (ev_is_active(&ses->ev)) {
         ev_io_stop(ses->loop, &ses->ev);
     }
-    ev_io_init(&ses->ev, libev_on_read_write_evt, ses->sockfd, ses->read_paused ? EV_WRITE : EV_READ | EV_WRITE);
+    ev_io_init(&ses->ev, libev_on_read_write_evt, ses->sockfd,
+            ses->read_paused || ses->peer_done ? EV_WRITE : EV_READ | EV_WRITE);
     ev_io_start(ses->loop, &ses->ev);
 }
 
@@ -171,6 +172,24 @@ static int shed_connection(nw_ses *ses)
  * the application. return false if on_can_read has to stop there: the
  * session was closed, or its reading was paused by the callback.
  */
+/*
+ * read returned 0: the peer has sent all it had to. it may be gone, or it
+ * may have said "that was my request" with shutdown(SHUT_WR) and be
+ * waiting for the answer; from here the two look the same. so if something
+ * is still to be sent, it is sent first: a peer that is gone makes the
+ * next write fail, and that closes the session too. nothing more is read
+ * meanwhile. with nothing to send, the session is closed at once.
+ */
+static void on_peer_done(nw_ses *ses)
+{
+    if (ses->write_buf->count == 0) {
+        ses->on_close(ses);
+        return;
+    }
+    ses->peer_done = true;
+    watch_update(ses);
+}
+
 static bool stream_decode(nw_ses *ses)
 {
     size_t size = 0;
@@ -254,7 +273,7 @@ static void on_can_read(nw_ses *ses)
                         return;
                     }
                 } else if (ret == 0) {
-                    ses->on_close(ses);
+                    on_peer_done(ses);
                     return;
                 } else {
                     ses->read_buf->wpos += ret;
@@ -290,7 +309,9 @@ static void on_can_read(nw_ses *ses)
                 nw_addr from;
                 memset(&from, 0, sizeof(from));
                 from.addrlen = sizeof(from.un);
-                int ret = recvfrom(ses->sockfd, ses->read_buf->data, ses->read_buf->size, 0, \
+                /* MSG_TRUNC: the length of the datagram, even if it did not
+                 * fit and only its beginning was put into the buf */
+                int ret = recvfrom(ses->sockfd, ses->read_buf->data, ses->read_buf->size, MSG_TRUNC, \
                         NW_SOCKADDR(&from), &from.addrlen);
                 if (ret < 0) {
                     if (errno == EINTR) {
@@ -314,6 +335,15 @@ static void on_can_read(nw_ses *ses)
                 } else {
                     /* a server replies to the sender of the current datagram */
                     memcpy(&ses->peer_addr, &from, sizeof(nw_addr));
+                }
+                if ((size_t)ret > ses->read_buf->size) {
+                    /* the beginning of a datagram is not a message */
+                    char errmsg[100];
+                    snprintf(errmsg, sizeof(errmsg), "datagram of %d bytes dropped, max_pkg_size is %u", ret, ses->read_buf->size);
+                    ses->on_error(ses, errmsg);
+                    if (!ses->read_buf)
+                        return;
+                    continue;
                 }
                 int pkg_size = ret;
                 ret = ses->decode_pkg(ses, ses->read_buf->data, pkg_size);
@@ -368,7 +398,7 @@ static void on_can_read(nw_ses *ses)
                         return;
                     }
                 } else if (ret == 0) {
-                    ses->on_close(ses);
+                    on_peer_done(ses);
                     return;
                 }
                 ses->active_time = ev_now(ses->loop);
@@ -390,6 +420,12 @@ static void on_can_read(nw_ses *ses)
                 } else {
                     if (ses->closing)
                         continue;
+                    if (msg.msg_flags & MSG_TRUNC) {
+                        /* a packet bigger than max_pkg_size: as for a stream
+                         * with too big a message, an error */
+                        ses->on_error(ses, "packet larger than max_pkg_size");
+                        return;
+                    }
                     int pkg_size = ret;
                     ret = ses->decode_pkg(ses, ses->read_buf->data, pkg_size);
                     if (ret < 0) {
@@ -439,6 +475,10 @@ static void on_can_write(nw_ses *ses)
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
                 /* keep it queued, wait for the next writable event */
                 break;
+            } else if (ses->peer_done) {
+                /* it had gone, not only finished: an end, not an error */
+                ses->on_close(ses);
+                return;
             } else {
                 char errmsg[100];
                 snprintf(errmsg, sizeof(errmsg), "write error: %m");
@@ -459,9 +499,12 @@ static void on_can_write(nw_ses *ses)
                 ses->write_shut = true;
             }
         } else if (ses->on_drain) {
-            /* the last thing done here: the callback may close the session */
+            /* the callback may close the session, or send more */
             ses->on_drain(ses);
         }
+        /* the peer was only waited for to take what was left: done */
+        if (ses->sockfd >= 0 && ses->peer_done && ses->write_buf->count == 0)
+            ses->on_close(ses);
     }
 }
 
@@ -550,12 +593,37 @@ static void libev_on_connect_evt(struct ev_loop *loop, ev_io *watcher, int event
         on_can_connect(ses);
 }
 
+/*
+ * a socket file is where this one wants to be. is it what a run that is
+ * over left behind, or does somebody answer on it? knocking tells: nobody
+ * behind a leftover takes the connection. (a server that does listen
+ * there sees one connection come and go.)
+ */
+static bool unix_path_in_use(nw_addr *addr, int sock_type)
+{
+    int fd = socket(AF_UNIX, sock_type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (fd < 0)
+        return false;
+    int ret = connect(fd, NW_SOCKADDR(addr), addr->addrlen);
+    int error = errno;
+    close(fd);
+    /* taken at once, taken with a full backlog, or a live socket of
+     * another type */
+    return ret == 0 || error == EAGAIN || error == EINPROGRESS || error == EPROTOTYPE;
+}
+
 int nw_ses_bind(nw_ses *ses, nw_addr *addr)
 {
     if (addr->family == AF_UNIX) {
-        /* remove a stale socket left by a previous run, but never anything else */
+        /* remove a stale socket left by a previous run, but never anything
+         * else, and never one that is in use: then bind fails as it does
+         * for a tcp port that is taken */
         struct stat st;
         if (lstat(addr->un.sun_path, &st) == 0 && S_ISSOCK(st.st_mode)) {
+            if (unix_path_in_use(addr, ses->sock_type)) {
+                errno = EADDRINUSE;
+                return -1;
+            }
             unlink(addr->un.sun_path);
         }
     }
@@ -790,6 +858,7 @@ int nw_ses_close(nw_ses *ses)
     ses->id = 0;
     ses->closing = false;
     ses->write_shut = false;
+    ses->peer_done = false;
     ses->deadline = 0;
     ses->idle_mark = 0;
     ses->write_pending = 0;

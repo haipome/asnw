@@ -60,6 +60,25 @@ nw_buf_pool *nw_buf_pool_create(uint32_t size)
     return pool;
 }
 
+/*
+ * giving something back must never need memory: an object that cannot be
+ * kept would have to be freed on the spot, under the feet of whoever still
+ * reads it (see nw_buf.h). so the room for it in free_arr is made when it
+ * is handed out, where failing is an ordinary "out of memory".
+ */
+static int reserve_slot(void ***free_arr, uint32_t *free_total, uint32_t outstanding)
+{
+    if (outstanding < *free_total)
+        return 0;
+    uint32_t new_total = *free_total * 2;
+    void **new_arr = realloc(*free_arr, new_total * sizeof(void *));
+    if (new_arr == NULL)
+        return -1;
+    *free_arr = new_arr;
+    *free_total = new_total;
+    return 0;
+}
+
 nw_buf *nw_buf_alloc(nw_buf_pool *pool)
 {
     if (pool->free) {
@@ -72,6 +91,8 @@ nw_buf *nw_buf_alloc(nw_buf_pool *pool)
         return buf;
     }
 
+    if (reserve_slot((void ***)&pool->free_arr, &pool->free_total, pool->used) < 0)
+        return NULL;
     nw_buf *buf = malloc(sizeof(nw_buf) + pool->size);
     if (buf == NULL)
         return NULL;
@@ -88,19 +109,11 @@ void nw_buf_free(nw_buf_pool *pool, nw_buf *buf)
 {
     if (pool->used > 0)
         pool->used--;
-    if (pool->free < pool->free_total) {
+    /* there is room, nw_buf_alloc saw to it. were there none (a buf given
+     * back twice, or to the wrong pool), it is let go of rather than freed:
+     * a leak harms nobody who is still reading it */
+    if (pool->free < pool->free_total)
         pool->free_arr[pool->free++] = buf;
-    } else {
-        uint32_t new_free_total = pool->free_total * 2;
-        void *new_arr = realloc(pool->free_arr, new_free_total * sizeof(nw_buf *));
-        if (new_arr) {
-            pool->free_total = new_free_total;
-            pool->free_arr = new_arr;
-            pool->free_arr[pool->free++] = buf;
-        } else {
-            free(buf);
-        }
-    }
 }
 
 uint32_t nw_buf_pool_shrink(nw_buf_pool *pool, uint32_t keep)
@@ -239,7 +252,15 @@ nw_cache *nw_cache_create(uint32_t size)
 
 void *nw_cache_alloc(nw_cache *cache)
 {
-    void *obj = cache->free ? cache->free_arr[--cache->free] : malloc(cache->size);
+    void *obj;
+    if (cache->free) {
+        obj = cache->free_arr[--cache->free];
+    } else {
+        /* the room to give it back, see nw_buf_alloc */
+        if (reserve_slot(&cache->free_arr, &cache->free_total, cache->used) < 0)
+            return NULL;
+        obj = malloc(cache->size);
+    }
     if (obj)
         cache->used++;
     return obj;
@@ -249,19 +270,9 @@ void nw_cache_free(nw_cache *cache, void *obj)
 {
     if (cache->used > 0)
         cache->used--;
-    if (cache->free < cache->free_total) {
+    /* never freed here, see nw_buf_free */
+    if (cache->free < cache->free_total)
         cache->free_arr[cache->free++] = obj;
-    } else {
-        uint32_t new_free_total = cache->free_total * 2;
-        void *new_arr = realloc(cache->free_arr, new_free_total * sizeof(void *));
-        if (new_arr) {
-            cache->free_total = new_free_total;
-            cache->free_arr = new_arr;
-            cache->free_arr[cache->free++] = obj;
-        } else {
-            free(obj);
-        }
-    }
 }
 
 uint32_t nw_cache_shrink(nw_cache *cache, uint32_t keep)

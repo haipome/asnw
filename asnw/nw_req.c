@@ -242,7 +242,7 @@ static ssize_t find_crlf(const char *data, size_t from, size_t to)
 
 /* cut the header lines into names and values, in place. data may still
  * move while the body is read, so offsets are kept, not pointers */
-static void split_head(struct nw_req *req)
+static int split_head(struct nw_req *req)
 {
     char *data = req->data;
     size_t pos = find_crlf(data, 0, req->head_size) + 2;
@@ -252,7 +252,11 @@ static void split_head(struct nw_req *req)
             break;
         size_t next = end + 2;
         char *colon = memchr(data + pos, ':', end - pos);
-        if (colon && colon != data + pos && req->header_count < NW_REQ_MAX_HEADERS) {
+        if (colon && colon != data + pos) {
+            /* one that is left out could be the one that says where the
+             * body ends: no guessing */
+            if (req->header_count == NW_REQ_MAX_HEADERS)
+                return fail(req, NW_REQ_ERR_RESPONSE, "more than %d headers in the response", NW_REQ_MAX_HEADERS);
             size_t name_end = colon - data;
             size_t value = name_end + 1;
             while (name_end > pos && (data[name_end - 1] == ' ' || data[name_end - 1] == '\t'))
@@ -269,6 +273,7 @@ static void split_head(struct nw_req *req)
         }
         pos = next;
     }
+    return 0;
 }
 
 static const char *head_value(struct nw_req *req, const char *name)
@@ -323,8 +328,7 @@ static int read_head(struct nw_req *req, int fd)
         req->head_size = 0;
         scanned = 0;
     }
-    split_head(req);
-    return 0;
+    return split_head(req);
 }
 
 /*

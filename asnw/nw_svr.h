@@ -59,6 +59,13 @@
  * sent yet. to say something last and be sure it arrives, send it and
  * call nw_svr_shutdown.
  *
+ * a peer that has sent all it had to (a tcp client that calls
+ * shutdown(SHUT_WR) after its request) still gets what was waiting to be
+ * sent to it: the connection is closed when that is out, or at once if
+ * there was nothing. only what is already queued when the end of its
+ * stream is read: an answer that is produced later, by a job for
+ * instance, finds the connection closed.
+ *
  * memory
  *
  * a connection with unfinished input holds one buf of max_pkg_size bytes,
@@ -99,8 +106,9 @@ typedef struct nw_svr_cfg {
      *
      * max size of one message, in bytes. it is also the size of the bufs:
      * every connection with unfinished input holds one, and the pending
-     * send list is made of them. a stream connection sending a message
-     * bigger than this is closed */
+     * send list is made of them. a stream or seqpacket connection sending
+     * a message bigger than this is closed; a datagram bigger than this is
+     * dropped, and on_error_msg is told */
     uint32_t max_pkg_size;
     /* max number of bufs in the pending send list of a connection, i.e. a
      * connection can have up to buf_limit * max_pkg_size bytes waiting to
@@ -355,8 +363,9 @@ nw_ses *nw_svr_next(nw_svr_iterator *iter);
 /* add an already connected socket to the server as if it had been accepted
  * here, e.g. a fd received from another process in on_recv_fd. it is made
  * non-blocking and close-on-exec. the server must have a bind of the same
- * address family. return 0, or -1 on failure,
- * in which case fd is still yours to close */
+ * address family and the same type of socket: the connection becomes one
+ * of the first such bind. return 0, or -1 on failure, in which case fd is
+ * still yours to close */
 int nw_svr_add_fd(nw_svr *svr, int fd);
 
 /* same for a connection that was accepted somewhere else on the address of

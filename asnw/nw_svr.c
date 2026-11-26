@@ -304,9 +304,16 @@ int nw_svr_add_fd(nw_svr *svr, int fd)
     if (nw_sock_set_nonblock(fd) < 0 || nw_sock_set_cloexec(fd) < 0) {
         return -1;
     }
+    /* it becomes a connection of the first bind of its kind: same family,
+     * and same type of socket (a server can listen on udp and tcp alike) */
+    int sock_type;
+    socklen_t len = sizeof(sock_type);
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &sock_type, &len) < 0) {
+        return -1;
+    }
     nw_ses *ses = NULL;
     for (uint32_t i = 0; i < svr->bind_count; ++i) {
-        if (peer_addr.family == svr->binds[i].local_addr->family) {
+        if (peer_addr.family == svr->binds[i].local_addr->family && sock_type == svr->binds[i].sock_type) {
             ses = &svr->binds[i];
             break;
         }
