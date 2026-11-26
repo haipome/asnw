@@ -53,7 +53,6 @@ static void watch_read_write(nw_ses *ses)
     ev_io_start(ses->loop, &ses->ev);
 }
 
-/* watch for what the session needs right now */
 static void watch_update(nw_ses *ses)
 {
     if (ses->write_buf->count > 0) {
@@ -172,14 +171,11 @@ static int shed_connection(nw_ses *ses)
  * the application. return false if on_can_read has to stop there: the
  * session was closed, or its reading was paused by the callback.
  */
-/*
- * read returned 0: the peer has sent all it had to. it may be gone, or it
- * may have said "that was my request" with shutdown(SHUT_WR) and be
- * waiting for the answer; from here the two look the same. so if something
- * is still to be sent, it is sent first: a peer that is gone makes the
- * next write fail, and that closes the session too. nothing more is read
- * meanwhile. with nothing to send, the session is closed at once.
- */
+/* read returned 0: the peer has sent all it had to. it may be gone, or half
+ * closed and waiting for the answer; the two look the same. what is queued is
+ * sent first (to a peer that is gone the write fails, which closes the
+ * session too) and nothing more is read. with nothing queued the session is
+ * closed at once */
 static void on_peer_done(nw_ses *ses)
 {
     if (ses->write_buf->count == 0) {
@@ -421,8 +417,8 @@ static void on_can_read(nw_ses *ses)
                     if (ses->closing)
                         continue;
                     if (msg.msg_flags & MSG_TRUNC) {
-                        /* a packet bigger than max_pkg_size: as for a stream
-                         * with too big a message, an error */
+                        /* too big a packet: an error, as too big a message on
+                         * a stream */
                         ses->on_error(ses, "packet larger than max_pkg_size");
                         return;
                     }
@@ -473,7 +469,6 @@ static void on_can_write(nw_ses *ses)
         }
         if (!done) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                /* keep it queued, wait for the next writable event */
                 break;
             } else if (ses->peer_done) {
                 /* it had gone, not only finished: an end, not an error */
@@ -518,7 +513,6 @@ static void on_can_accept(nw_ses *ses)
         memset(&peer_addr, 0, sizeof(peer_addr));
         peer_addr.family = ses->local_addr->family;
         peer_addr.addrlen = ses->local_addr->addrlen;
-        /* non-blocking and close-on-exec from the start */
         int sockfd = accept4(ses->sockfd, NW_SOCKADDR(&peer_addr), &peer_addr.addrlen, SOCK_NONBLOCK | SOCK_CLOEXEC);
         if (sockfd < 0) {
             if (errno == EINTR || errno == ECONNABORTED || errno == EPROTO) {
@@ -593,23 +587,14 @@ static void libev_on_connect_evt(struct ev_loop *loop, ev_io *watcher, int event
         on_can_connect(ses);
 }
 
-/*
- * a socket file is where this one wants to be. is it what a run that is
- * over left behind, or does somebody answer on it? knocking tells: behind
- * a leftover, the connection is refused. that answer and no other makes it
- * a leftover. a connection that is taken, a refusal for another reason
- * (no permission: somebody is there), not being able to knock at all (no
- * fd left): in all of these the file is not ours to remove.
- *
- * return 1 for a leftover, 0 if the file has gone meanwhile, -1 if it must
- * stay, with errno saying why (EADDRINUSE when somebody answers).
- *
- * two things to know. a server that does listen there sees one connection
- * come and go. and a server that has bound the path but does not listen
- * yet refuses like a leftover: two servers started on one path in the
- * same instant can both end up believing it is theirs. only a lock held
- * by whoever starts them can rule that out, and that is theirs to hold.
- */
+/* a socket file is in the way: left by a run that is over, or does somebody
+ * answer on it? only a refused connection makes it a leftover. taken, refused
+ * for another reason, no fd to try with: it is not ours to remove. return 1
+ * for a leftover, 0 if the file has gone meanwhile, -1 if it must stay (errno
+ * says why, EADDRINUSE when somebody answers). a server that has bound the
+ * path and does not listen yet refuses like a leftover: two servers started
+ * in the same instant are not kept apart here, that takes a lock held by
+ * whoever starts them */
 static int unix_path_leftover(nw_addr *addr, int sock_type)
 {
     int fd = socket(AF_UNIX, sock_type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
@@ -622,8 +607,7 @@ static int unix_path_leftover(nw_addr *addr, int sock_type)
         return 1;
     if (ret < 0 && error == ENOENT)
         return 0;
-    /* taken at once, taken with a full backlog, or a live socket of
-     * another type: in use. anything else is reported as it is */
+    /* taken, backlog full, or a live socket of another type */
     if (ret == 0 || error == EAGAIN || error == EINPROGRESS || error == EPROTOTYPE)
         error = EADDRINUSE;
     errno = error;
@@ -633,9 +617,8 @@ static int unix_path_leftover(nw_addr *addr, int sock_type)
 int nw_ses_bind(nw_ses *ses, nw_addr *addr)
 {
     if (addr->family == AF_UNIX) {
-        /* remove a stale socket left by a previous run, but never anything
-         * else, and never one that may be in use: then bind fails, as it
-         * does for a tcp port that is taken */
+        /* a leftover of a previous run is removed: nothing else, and nothing
+         * that may be in use */
         struct stat st;
         if (lstat(addr->un.sun_path, &st) == 0 && S_ISSOCK(st.st_mode)) {
             int leftover = unix_path_leftover(addr, ses->sock_type);

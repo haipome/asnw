@@ -144,7 +144,6 @@ static int worker_post(struct nw_hub_worker *worker, struct event *event)
     return 0;
 }
 
-/* take everything that is queued, in one go */
 static struct event *worker_take(struct nw_hub_worker *worker)
 {
     pthread_mutex_lock(&worker->lock);
@@ -174,7 +173,6 @@ static void worker_handle(struct nw_hub_worker *worker, struct event *event)
     switch (event->type) {
     case EVENT_ADD_FD:
         if (!worker->exit && nw_svr_add_accepted_fd(svr, event->bind_index, event->fd, (nw_addr *)event->data) == 0) {
-            /* the connection has it now */
             event->fd = -1;
         }
         break;

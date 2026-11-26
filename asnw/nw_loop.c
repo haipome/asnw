@@ -50,7 +50,6 @@ void nw_loop_init(void)
     initialized = 1;
 }
 
-/* see nw_loop_at_release */
 # define NW_RELEASE_HOOK_MAX 8
 static __thread void (*release_hooks[NW_RELEASE_HOOK_MAX])(void);
 static __thread int release_hook_count;

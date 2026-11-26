@@ -46,15 +46,10 @@ static void set_timer(nw_svr *svr, double interval)
     svr->timer_interval = interval;
 }
 
-/*
- * walk the connections: close the ones done shutting down, report the
- * ones whose idle timeout or deadline has passed.
- *
- * on the way, note the shortest timeout that is still in force, and let
- * that decide when to look again. so the timer runs as often as the
- * connections of the moment need - not as often as some connection once
- * needed - and stops when none of them has anything to wait for.
- */
+/* walk the connections: close the ones done shutting down, report the ones
+ * whose idle timeout or deadline has passed. the shortest timeout still in
+ * force decides when to look again, so the timer follows the connections of
+ * the moment and stops when none of them needs it */
 static void on_timer(nw_timer *timer, void *privdata)
 {
     nw_svr *svr = privdata;
@@ -304,8 +299,7 @@ int nw_svr_add_fd(nw_svr *svr, int fd)
     if (nw_sock_set_nonblock(fd) < 0 || nw_sock_set_cloexec(fd) < 0) {
         return -1;
     }
-    /* it becomes a connection of the first bind of its kind: same family,
-     * and same type of socket (a server can listen on udp and tcp alike) */
+    /* the first bind of its kind: same family, same type of socket */
     int sock_type;
     socklen_t len = sizeof(sock_type);
     if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &sock_type, &len) < 0) {
@@ -333,15 +327,10 @@ int nw_svr_add_accepted_fd(nw_svr *svr, uint32_t bind_index, int fd, nw_addr *pe
     return nw_svr_add_clt(ses, fd, peer_addr);
 }
 
-/*
- * the pool of bufs and the cache of sessions keep what the busiest moment
- * took. once a minute, what they have no use for any more is given back:
- * as many free ones stay as there are in use, and the shrink functions
- * never leave less than 64, so a server at work keeps what it works with
- * and a small one is left alone. this runs from a timer because nothing
- * may be freed while a callback of a connection is on its way, see
- * nw_buf.h.
- */
+/* once a minute, give back the bufs and sessions left over from a busier
+ * time: as many free ones stay as are in use, and the shrink functions keep
+ * at least 64. from a timer, because nothing may be freed while a callback of
+ * a connection is running, see nw_buf.h */
 static void on_shrink_timer(nw_timer *timer, void *privdata)
 {
     nw_svr *svr = privdata;
@@ -434,9 +423,8 @@ nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
         }
     }
 
-    /* from now until nw_svr_release, started or not: the servers of a
-     * nw_hub never are. the loop does not count this timer among the
-     * things it runs for, so a loop with nothing else to do still returns */
+    /* from create to release, started or not: the servers of a nw_hub never
+     * are. unref, so that the loop does not run for its sake */
     nw_timer_set(&svr->shrink_timer, NW_SVR_SHRINK_INTERVAL, true, on_shrink_timer, svr);
     nw_timer_start(&svr->shrink_timer);
     ev_unref(svr->shrink_timer.loop);
@@ -473,7 +461,7 @@ void nw_svr_release(nw_svr *svr)
 {
     nw_svr_stop(svr);
     nw_timer_stop(&svr->timer);
-    /* it was not counted, see nw_svr_create: count it again to stop it */
+    /* undo the unref of nw_svr_create */
     ev_ref(svr->shrink_timer.loop);
     nw_timer_stop(&svr->shrink_timer);
     nw_svr_iterator iter;
@@ -492,14 +480,9 @@ void nw_svr_close(nw_svr *svr, nw_ses *ses)
     if (ses->ses_type != NW_SES_TYPE_COMMON)
         return;
 
-    /*
-     * take the connection out of the server BEFORE telling the application.
-     * whatever on_close does then - send on this connection,
-     * close it again, close others whose own callbacks look for this one -
-     * cannot get back in here for it: it is not found by id any more, a
-     * second close stops at the line below, and sending fails quietly
-     * instead of reporting an error that would close it once more.
-     */
+    /* take the connection out of the server BEFORE telling the application:
+     * whatever on_close does (send on it, close it again, close others that
+     * look for it) cannot get back in here for it */
     if (nw_dict_del(svr->ses_dict, ses->id) < 0)
         return;
     svr->ses_count--;

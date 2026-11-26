@@ -60,12 +60,9 @@ nw_buf_pool *nw_buf_pool_create(uint32_t size)
     return pool;
 }
 
-/*
- * giving something back must never need memory: an object that cannot be
- * kept would have to be freed on the spot, under the feet of whoever still
- * reads it (see nw_buf.h). so the room for it in free_arr is made when it
- * is handed out, where failing is an ordinary "out of memory".
- */
+/* giving back must never need memory (failing, it could only free an object
+ * that may still be read, see nw_buf.h): the room in free_arr is made when
+ * the object is handed out */
 static int reserve_slot(void ***free_arr, uint32_t *free_total, uint32_t outstanding)
 {
     if (outstanding < *free_total)
@@ -109,9 +106,8 @@ void nw_buf_free(nw_buf_pool *pool, nw_buf *buf)
 {
     if (pool->used > 0)
         pool->used--;
-    /* there is room, nw_buf_alloc saw to it. were there none (a buf given
-     * back twice, or to the wrong pool), it is let go of rather than freed:
-     * a leak harms nobody who is still reading it */
+    /* never freed here. with no room (given back twice, or to the wrong pool)
+     * it is leaked */
     if (pool->free < pool->free_total)
         pool->free_arr[pool->free++] = buf;
 }
@@ -230,7 +226,6 @@ void nw_buf_list_release(nw_buf_list *list)
     free(list);
 }
 
-
 nw_cache *nw_cache_create(uint32_t size)
 {
     nw_cache *cache = malloc(sizeof(nw_cache));
@@ -256,7 +251,6 @@ void *nw_cache_alloc(nw_cache *cache)
     if (cache->free) {
         obj = cache->free_arr[--cache->free];
     } else {
-        /* the room to give it back, see nw_buf_alloc */
         if (reserve_slot(&cache->free_arr, &cache->free_total, cache->used) < 0)
             return NULL;
         obj = malloc(cache->size);

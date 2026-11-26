@@ -59,27 +59,19 @@
  * sent yet. to say something last and be sure it arrives, send it and
  * call nw_svr_shutdown.
  *
- * a peer that has sent all it had to (a tcp client that calls
- * shutdown(SHUT_WR) after its request) still gets what was waiting to be
- * sent to it: the connection is closed when that is out, or at once if
- * there was nothing. only what is already queued when the end of its
- * stream is read: an answer that is produced later, by a job for
- * instance, finds the connection closed.
+ * a peer that has finished sending and still reads (a tcp client that
+ * calls shutdown(SHUT_WR) after its request) gets what was already queued
+ * for it, then the connection is closed. an answer produced later, by a
+ * job for instance, finds it closed.
  *
  * memory
  *
  * a connection with unfinished input holds one buf of max_pkg_size bytes,
- * and what waits to be sent is kept in such bufs. they come from the pool
- * of the server, which reuses them, as its cache reuses the memory of the
- * sessions. once a minute the server gives what it has no use for back to
- * the system: it keeps as many free bufs as it has in use, and at least
- * 64, and the same for sessions. so the memory of a peak is returned
- * within a minute or two, a server under steady load keeps what it works
- * with, and a small one is left alone. there is nothing to set and
- * nothing to call.
- *
- * one more reason not to keep a nw_ses pointer: the memory of a closed
- * session is reused by a later connection, or given back to the system.
+ * and what waits to be sent is kept in such bufs. bufs and sessions are
+ * reused. once a minute the server gives back to the system what it has
+ * no use for, keeping as many free ones as are in use and at least 64:
+ * nothing to set, nothing to call. the memory of a closed session is thus
+ * reused or gone, one more reason never to keep a nw_ses pointer.
  *
  * datagrams
  *

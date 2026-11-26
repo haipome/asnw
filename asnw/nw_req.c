@@ -84,12 +84,9 @@ static bool given_up(struct nw_req *req)
     return __atomic_load_n(&req->cancelled, __ATOMIC_RELAXED) || __atomic_load_n(req->stopping, __ATOMIC_RELAXED);
 }
 
-/*
- * wait until fd is ready or the time is up. 1: ready, 0: time is up, -1:
- * poll failed. the wait is cut in short pieces to notice a request that
- * nobody waits for any more; that one is reported as out of time, to
- * nobody.
- */
+/* wait until fd is ready (1), the time is up (0) or poll failed (-1). in
+ * short pieces, to notice a request that was given up: that one is reported
+ * as out of time */
 static int wait_fd(struct nw_req *req, int fd, short events, double until)
 {
     for (;;) {
@@ -516,9 +513,9 @@ static int pool_init(void)
     return 0;
 }
 
-/* "http://host[:port][/path][?query]" into what the worker needs: the
- * host and port to connect to, and the request as it is sent, with its
- * body if there is one (content_type is NULL for a request without) */
+/* "http://host[:port][/path][?query]" into the host and port to connect to
+ * and the request as it is sent, body included (content_type is NULL without
+ * one) */
 static int build_request(struct nw_req *req, const char *method, const char *url,
         const char *content_type, const void *body, size_t size)
 {

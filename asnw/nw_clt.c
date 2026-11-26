@@ -72,7 +72,6 @@ static int call_on_close(nw_clt *clt);
 static int clt_close(nw_clt *clt);
 static bool try_next_addr(nw_clt *clt);
 
-/* the connect attempt got no answer in time: give it up and try again */
 static void on_connect_timeout(nw_timer *timer, void *privdata)
 {
     nw_clt *clt = (nw_clt *)privdata;
@@ -107,12 +106,10 @@ static int clt_close(nw_clt *clt)
     nw_timer_stop(&clt->timer);
     clt->connected = false;
     if (clt->dns_query) {
-        /* its answer is not wanted any more */
         nw_dns_cancel(clt->dns_query);
         clt->dns_query = NULL;
     }
     int ret = nw_ses_close(&clt->ses);
-    /* remove the socket file a unix dgram client bound for itself */
     if (clt->local_path_bound) {
         unlink(clt->ses.local_addr->un.sun_path);
         clt->local_path_bound = false;
@@ -156,13 +153,9 @@ static void close_and_reconnect(nw_clt *clt)
     reconnect_later(clt, ret > 0 ? 0 : clt->reconnect_timeout);
 }
 
-/*
- * a server given by name. connecting to it is: look the name up, then try
- * its addresses one by one. an address that fails is not worth telling
- * the application about while there are others left: this moves on to the
- * next one, through a zero delay timer like any retry, and returns true.
- * false means the attempt as a whole has failed.
- */
+/* a server given by name has several addresses: move on to the next one
+ * without telling the application, through a zero delay timer like any retry.
+ * false: none is left, the attempt as a whole has failed */
 static bool try_next_addr(nw_clt *clt)
 {
     if (clt->name == NULL || clt->resolve_again || clt->addr_next >= clt->addr_count)
@@ -174,7 +167,6 @@ static bool try_next_addr(nw_clt *clt)
 
 static int connect_to_peer(nw_clt *clt);
 
-/* the answer of nw_dns */
 static void on_resolved(int error, nw_addr *addrs, uint32_t count, void *privdata)
 {
     nw_clt *clt = privdata;
@@ -192,8 +184,7 @@ static void on_resolved(int error, nw_addr *addrs, uint32_t count, void *privdat
         clt->addr_next = 0;
         clt->resolve_again = false;
     } else {
-        /* a failed attempt like a connect that failed: say why, tell the
-         * application it is over, try again later */
+        /* counts as a failed attempt: say why, close, try again later */
         char msg[NW_DNS_MAX_NAME + 128];
         snprintf(msg, sizeof(msg), "resolve %s: %s", clt->name, nw_dns_strerror(error));
         uint32_t generation = clt->generation;
@@ -202,7 +193,6 @@ static void on_resolved(int error, nw_addr *addrs, uint32_t count, void *privdat
         if (generation != clt->generation)
             return;
         if (clt->ses.sock_type == SOCK_DGRAM) {
-            /* nothing was open, there is nothing to close */
             reconnect_later(clt, clt->reconnect_timeout);
         } else {
             close_and_reconnect(clt);
@@ -222,7 +212,6 @@ static void on_connect(nw_ses *ses, bool result)
     if (!result && try_next_addr(clt))
         return;
     if (result) {
-        /* the connect timeout is not needed any more */
         nw_timer_stop(&clt->timer);
         clt->connected = true;
         /* when this connection is lost the name may point elsewhere */
@@ -391,7 +380,6 @@ int nw_clt_start(nw_clt *clt)
 
     if (clt->name) {
         if (clt->resolve_again || clt->addr_next >= clt->addr_count) {
-            /* connecting goes on in on_resolved */
             clt->on_connect_called = false;
             clt->dns_query = nw_dns_resolve(clt->name, clt->port, on_resolved, clt);
             return clt->dns_query ? 0 : -1;
@@ -401,7 +389,6 @@ int nw_clt_start(nw_clt *clt)
     return connect_to_peer(clt);
 }
 
-/* open a socket and connect it to ses.peer_addr */
 static int connect_to_peer(nw_clt *clt)
 {
     int sockfd = create_socket(clt->ses.peer_addr.family, clt->ses.sock_type);

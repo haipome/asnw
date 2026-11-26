@@ -165,7 +165,6 @@ typedef struct nw_ws_conn {
     char *message;
     size_t message_size;
     size_t message_total;
-    /* the per connection data of the application */
     void *privdata;
 } nw_ws_conn;
 
@@ -277,7 +276,6 @@ struct id_request {
     char data[];
 };
 
-/* on the worker of the connection */
 static void on_id_request(nw_hub *hub, void *data, size_t size)
 {
     struct id_request *request = data;
@@ -349,7 +347,6 @@ static int broadcast_frame(nw_svr *raw_svr, const void *frame, size_t frame_size
     return count;
 }
 
-/* on every worker */
 static void on_broadcast(nw_hub *hub, void *data, size_t size)
 {
     broadcast_frame(nw_hub_svr(hub), data, size);
@@ -832,7 +829,6 @@ static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
 
 static void on_open(nw_ses *ses)
 {
-    /* the upgrade request has to be here in time */
     nw_svr_set_deadline(ses->svr, ses, NW_WS_HANDSHAKE_TIMEOUT);
 }
 
