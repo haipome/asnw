@@ -4,12 +4,14 @@
  * a server still listening on it, it used to be removed all the same
  * (regression): the second server started, new connections went to it, the
  * first one kept its old ones and nobody was told. Now the second fails
- * to start, as it does on a tcp port that is taken. Anything that is not
- * a socket is left alone, as before.
+ * to start, as it does on a tcp port that is taken. The path also stays
+ * whenever it cannot be told whether somebody listens. Anything that is
+ * not a socket is left alone, as before.
  */
 # include <fcntl.h>
 # include <sys/socket.h>
 # include <sys/stat.h>
+# include <sys/resource.h>
 # include <sys/un.h>
 # include "common.h"
 
@@ -94,6 +96,45 @@ static void check(const char *proto, int sock_type)
     int before = got;
     CHECK(answers(path, sock_type));
     CHECK_EQ(got, before + 1);
+
+    /*
+     * when it cannot be found out whether somebody listens, the path stays
+     * (regression: it was removed). here no fd is left to knock with: the
+     * limit is lowered to what is open, the server having made its own
+     * socket before
+     */
+    second = server(cfg);
+    struct rlimit old_limit, low_limit;
+    CHECK_EQ(getrlimit(RLIMIT_NOFILE, &old_limit), 0);
+    int next_fd = dup(0);
+    CHECK(next_fd >= 0);
+    close(next_fd);
+    low_limit = old_limit;
+    low_limit.rlim_cur = next_fd;
+    CHECK_EQ(setrlimit(RLIMIT_NOFILE, &low_limit), 0);
+    errno = 0;
+    int ret = nw_svr_start(second);
+    int error = errno;
+    CHECK_EQ(setrlimit(RLIMIT_NOFILE, &old_limit), 0);
+    CHECK_EQ(ret, -1);
+    CHECK_EQ(error, EMFILE);
+    nw_svr_release(second);
+    CHECK_EQ(lstat(path, &st), 0);
+    CHECK(answers(path, sock_type));
+
+    /* nor when knocking is not allowed: somebody is there who does not
+     * let us in. (root is let in everywhere: nothing to see then) */
+    if (geteuid() != 0) {
+        CHECK_EQ(chmod(path, 0), 0);
+        second = server(cfg);
+        errno = 0;
+        CHECK_EQ(nw_svr_start(second), -1);
+        CHECK_EQ(errno, EACCES);
+        nw_svr_release(second);
+        CHECK_EQ(lstat(path, &st), 0);
+        CHECK_EQ(chmod(path, 0777), 0);
+        CHECK(answers(path, sock_type));
+    }
 
     /* the first one is gone and its path is still there: a leftover, which
      * the next server removes */

@@ -595,36 +595,54 @@ static void libev_on_connect_evt(struct ev_loop *loop, ev_io *watcher, int event
 
 /*
  * a socket file is where this one wants to be. is it what a run that is
- * over left behind, or does somebody answer on it? knocking tells: nobody
- * behind a leftover takes the connection. (a server that does listen
- * there sees one connection come and go.)
+ * over left behind, or does somebody answer on it? knocking tells: behind
+ * a leftover, the connection is refused. that answer and no other makes it
+ * a leftover. a connection that is taken, a refusal for another reason
+ * (no permission: somebody is there), not being able to knock at all (no
+ * fd left): in all of these the file is not ours to remove.
+ *
+ * return 1 for a leftover, 0 if the file has gone meanwhile, -1 if it must
+ * stay, with errno saying why (EADDRINUSE when somebody answers).
+ *
+ * two things to know. a server that does listen there sees one connection
+ * come and go. and a server that has bound the path but does not listen
+ * yet refuses like a leftover: two servers started on one path in the
+ * same instant can both end up believing it is theirs. only a lock held
+ * by whoever starts them can rule that out, and that is theirs to hold.
  */
-static bool unix_path_in_use(nw_addr *addr, int sock_type)
+static int unix_path_leftover(nw_addr *addr, int sock_type)
 {
     int fd = socket(AF_UNIX, sock_type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
     if (fd < 0)
-        return false;
+        return -1;
     int ret = connect(fd, NW_SOCKADDR(addr), addr->addrlen);
     int error = errno;
     close(fd);
+    if (ret < 0 && error == ECONNREFUSED)
+        return 1;
+    if (ret < 0 && error == ENOENT)
+        return 0;
     /* taken at once, taken with a full backlog, or a live socket of
-     * another type */
-    return ret == 0 || error == EAGAIN || error == EINPROGRESS || error == EPROTOTYPE;
+     * another type: in use. anything else is reported as it is */
+    if (ret == 0 || error == EAGAIN || error == EINPROGRESS || error == EPROTOTYPE)
+        error = EADDRINUSE;
+    errno = error;
+    return -1;
 }
 
 int nw_ses_bind(nw_ses *ses, nw_addr *addr)
 {
     if (addr->family == AF_UNIX) {
         /* remove a stale socket left by a previous run, but never anything
-         * else, and never one that is in use: then bind fails as it does
-         * for a tcp port that is taken */
+         * else, and never one that may be in use: then bind fails, as it
+         * does for a tcp port that is taken */
         struct stat st;
         if (lstat(addr->un.sun_path, &st) == 0 && S_ISSOCK(st.st_mode)) {
-            if (unix_path_in_use(addr, ses->sock_type)) {
-                errno = EADDRINUSE;
+            int leftover = unix_path_leftover(addr, ses->sock_type);
+            if (leftover < 0)
                 return -1;
-            }
-            unlink(addr->un.sun_path);
+            if (leftover > 0)
+                unlink(addr->un.sun_path);
         }
     }
     int ret = bind(ses->sockfd, NW_SOCKADDR(addr), addr->addrlen);
