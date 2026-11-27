@@ -61,18 +61,18 @@ nw_buf_pool *nw_buf_pool_create(uint32_t size)
 }
 
 /* giving back must never need memory (failing, it could only free an object
- * that may still be read, see nw_buf.h): the room in free_arr is made when
- * the object is handed out */
-static int reserve_slot(void ***free_arr, uint32_t *free_total, uint32_t outstanding)
+ * that may still be read, see nw_buf.h): free_arr always has room for every
+ * buf that is out, and the room for one more is made before it is handed out */
+static int pool_reserve_slot(nw_buf_pool *pool)
 {
-    if (outstanding < *free_total)
+    if (pool->used + pool->free < pool->free_total)
         return 0;
-    uint32_t new_total = *free_total * 2;
-    void **new_arr = realloc(*free_arr, new_total * sizeof(void *));
+    uint32_t new_total = pool->free_total * 2;
+    nw_buf **new_arr = realloc(pool->free_arr, new_total * sizeof(nw_buf *));
     if (new_arr == NULL)
         return -1;
-    *free_arr = new_arr;
-    *free_total = new_total;
+    pool->free_arr = new_arr;
+    pool->free_total = new_total;
     return 0;
 }
 
@@ -88,7 +88,7 @@ nw_buf *nw_buf_alloc(nw_buf_pool *pool)
         return buf;
     }
 
-    if (reserve_slot((void ***)&pool->free_arr, &pool->free_total, pool->used) < 0)
+    if (pool_reserve_slot(pool) < 0)
         return NULL;
     nw_buf *buf = malloc(sizeof(nw_buf) + pool->size);
     if (buf == NULL)
@@ -245,13 +245,27 @@ nw_cache *nw_cache_create(uint32_t size)
     return cache;
 }
 
+/* as pool_reserve_slot */
+static int cache_reserve_slot(nw_cache *cache)
+{
+    if (cache->used + cache->free < cache->free_total)
+        return 0;
+    uint32_t new_total = cache->free_total * 2;
+    void **new_arr = realloc(cache->free_arr, new_total * sizeof(void *));
+    if (new_arr == NULL)
+        return -1;
+    cache->free_arr = new_arr;
+    cache->free_total = new_total;
+    return 0;
+}
+
 void *nw_cache_alloc(nw_cache *cache)
 {
     void *obj;
     if (cache->free) {
         obj = cache->free_arr[--cache->free];
     } else {
-        if (reserve_slot(&cache->free_arr, &cache->free_total, cache->used) < 0)
+        if (cache_reserve_slot(cache) < 0)
             return NULL;
         obj = malloc(cache->size);
     }
