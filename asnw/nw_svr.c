@@ -492,7 +492,7 @@ void nw_svr_close(nw_svr *svr, nw_ses *ses)
     if (svr->type.on_close) {
         svr->type.on_close(ses);
     }
-    if (ses->privdata) {
+    if (ses->privdata && svr->type.on_privdata_free) {
         svr->type.on_privdata_free(svr, ses->privdata);
     }
     nw_ses_release(ses);

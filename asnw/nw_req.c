@@ -242,9 +242,15 @@ static ssize_t find_crlf(const char *data, size_t from, size_t to)
 static int split_head(struct nw_req *req)
 {
     char *data = req->data;
-    size_t pos = find_crlf(data, 0, req->head_size) + 2;
+    ssize_t line_end = find_crlf(data, 0, req->head_size);
+    if (line_end < 0)
+        return fail(req, NW_REQ_ERR_RESPONSE, "not a http response");
+    size_t pos = line_end + 2;
     for (;;) {
-        size_t end = find_crlf(data, pos, req->head_size);
+        line_end = find_crlf(data, pos, req->head_size);
+        if (line_end < 0)
+            return fail(req, NW_REQ_ERR_RESPONSE, "not a http response");
+        size_t end = line_end;
         if (end == pos)
             break;
         size_t next = end + 2;

@@ -263,8 +263,11 @@ int nw_clt_cfg_parse(const char *str, nw_clt_cfg *cfg)
     if (ret != -4)
         return ret;
 
-    const char *name = strchr(str, '@') + 1;
-    const char *colon = strrchr(name, ':');
+    const char *at = strchr(str, '@');
+    const char *colon = at ? strrchr(at + 1, ':') : NULL;
+    if (colon == NULL)
+        return ret;
+    const char *name = at + 1;
     size_t len = colon - name;
     /* an ipv6 address that did not parse stays a bad ip */
     if (name[0] == '[' || memchr(name, ':', len) != NULL)
