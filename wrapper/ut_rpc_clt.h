@@ -12,10 +12,11 @@
 
 /*
  * rpc_clt keeps a connection to one of several equivalent servers. it
- * starts with the first address; when a connection fails or is lost it
- * goes through the whole list without delay, from the first address on,
- * then waits reconnect_timeout before going through it again. heartbeats
- * are sent automatically (see ut_rpc.h).
+ * goes through the list from the first address on, one attempt each and
+ * without delay; when none of them answers it waits reconnect_timeout and
+ * goes through the list again. a connection that is lost sends it back to
+ * the first address at once. heartbeats are sent automatically (see
+ * ut_rpc.h).
  *
  * in the callbacks ses->privdata is the rpc_clt.
  */
@@ -46,6 +47,15 @@ typedef struct rpc_clt_type {
      *
      * called when a connect attempt ends, see nw_clt_type.on_connect */
     void (*on_connect)(nw_ses *ses, bool result);
+    /* optional
+     *
+     * called when a connection that was established is over: lost, given
+     * up after a heartbeat timeout, or closed by rpc_clt_stop (not by
+     * rpc_clt_release, which calls nothing). every on_connect(true) is
+     * followed by one on_close. ses->peer_addr is
+     * still the server it was connected to, and rpc_clt_send returns -1:
+     * the place to deal with the requests that were waiting for a reply */
+    void (*on_close)(nw_ses *ses);
 } rpc_clt_type;
 
 /* the fields are for reading only */
@@ -59,6 +69,7 @@ typedef struct rpc_clt {
     double last_heartbeat;
     void (*on_recv_pkg)(nw_ses *ses, rpc_pkg *pkg);
     void (*on_connect)(nw_ses *ses, bool result);
+    void (*on_close)(nw_ses *ses);
 } rpc_clt;
 
 /* create a client. return NULL if name or on_recv_pkg is missing or

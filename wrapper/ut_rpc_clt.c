@@ -42,12 +42,20 @@ static void on_connect(nw_ses *ses, bool result)
     }
 }
 
+/* curr_index counts the addresses of the list that have had their turn
+ * since the last connection: the next one is tried at once, and when all
+ * have failed the client waits before it starts with the first again */
 static int on_close(nw_ses *ses)
 {
     rpc_clt *clt= ses->privdata;
+    /* still connected here means that a connection is ending, not an
+     * attempt that failed: that one was reported by on_connect */
+    if (clt->on_close && nw_clt_connected(clt->raw_clt))
+        clt->on_close(ses);
 
     if (clt->curr_index == clt->addr_count) {
-        clt->curr_index = 0;
+        memcpy(&ses->peer_addr, &clt->addrs[0], sizeof(nw_addr));
+        clt->curr_index = 1;
         return 0;
     }
     memcpy(&ses->peer_addr, &clt->addrs[clt->curr_index], sizeof(nw_addr));
@@ -104,8 +112,6 @@ rpc_clt *rpc_clt_create(rpc_clt_cfg *cfg, rpc_clt_type *type)
 
     rpc_clt *clt = malloc(sizeof(rpc_clt));
     assert(clt != NULL);
-    /* curr_index must start at 0: on_close reads it before the first
-     * successful connect ever sets it */
     memset(clt, 0, sizeof(rpc_clt));
 
     clt->raw_clt = nw_clt_create(&raw_cfg, &raw_type, clt);
@@ -124,12 +130,16 @@ rpc_clt *rpc_clt_create(rpc_clt_cfg *cfg, rpc_clt_type *type)
     nw_timer_set(&clt->timer, RPC_HEARTBEAT_INTERVAL, true, on_timer, clt);
     clt->on_recv_pkg = type->on_recv_pkg;
     clt->on_connect = type->on_connect;
+    clt->on_close = type->on_close;
 
     return clt;
 }
 
 int rpc_clt_start(rpc_clt *clt)
 {
+    /* the first address, and it has had its turn */
+    memcpy(&clt->raw_clt->ses.peer_addr, &clt->addrs[0], sizeof(nw_addr));
+    clt->curr_index = 1;
     int ret = nw_clt_start(clt->raw_clt);
     if (ret < 0) {
         return ret;
