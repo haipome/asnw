@@ -127,9 +127,8 @@ uint32_t nw_buf_pool_shrink(nw_buf_pool *pool, uint32_t keep)
 
 void nw_buf_pool_release(nw_buf_pool *pool)
 {
-    for (uint32_t i = 0; i < pool->free; ++i) {
+    for (uint32_t i = 0; i < pool->free; ++i)
         free(pool->free_arr[i]);
-    }
     free(pool->free_arr);
     free(pool);
 }
@@ -206,9 +205,8 @@ void nw_buf_list_shift(nw_buf_list *list)
     if (list->head) {
         nw_buf *tmp = list->head;
         list->head = tmp->next;
-        if (list->head == NULL) {
+        if (list->head == NULL)
             list->tail = NULL;
-        }
         list->count--;
         nw_buf_free(list->pool, tmp);
     }
@@ -298,9 +296,8 @@ uint32_t nw_cache_shrink(nw_cache *cache, uint32_t keep)
 
 void nw_cache_release(nw_cache *cache)
 {
-    for (uint32_t i = 0; i < cache->free; ++i) {
+    for (uint32_t i = 0; i < cache->free; ++i)
         free(cache->free_arr[i]);
-    }
     free(cache->free_arr);
     free(cache);
 }

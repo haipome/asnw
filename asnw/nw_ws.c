@@ -44,12 +44,11 @@ static void sha1_block(uint32_t state[5], const uint8_t block[64])
 {
     uint32_t w[80];
     for (int i = 0; i < 16; ++i) {
-        w[i] = ((uint32_t)block[i * 4] << 24) | ((uint32_t)block[i * 4 + 1] << 16) | \
+        w[i] = ((uint32_t)block[i * 4] << 24) | ((uint32_t)block[i * 4 + 1] << 16) |
             ((uint32_t)block[i * 4 + 2] << 8) | block[i * 4 + 3];
     }
-    for (int i = 16; i < 80; ++i) {
+    for (int i = 16; i < 80; ++i)
         w[i] = rol32(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
-    }
 
     uint32_t a = state[0], b = state[1], c = state[2], d = state[3], e = state[4];
     for (int i = 0; i < 80; ++i) {
@@ -86,9 +85,8 @@ static void sha1(const void *data, size_t size, uint8_t digest[20])
     uint32_t state[5] = { 0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476, 0xC3D2E1F0 };
     const uint8_t *p = data;
     size_t left = size;
-    for (; left >= 64; left -= 64, p += 64) {
+    for (; left >= 64; left -= 64, p += 64)
         sha1_block(state, p);
-    }
 
     /* the rest, a 0x80 byte, zeros, and the length in bits in the last 8 bytes */
     uint8_t tail[128];
@@ -97,9 +95,8 @@ static void sha1(const void *data, size_t size, uint8_t digest[20])
     memcpy(tail, p, left);
     tail[left] = 0x80;
     uint64_t bits = (uint64_t)size * 8;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 8; ++i)
         tail[tail_size - 1 - i] = (uint8_t)(bits >> (i * 8));
-    }
     sha1_block(state, tail);
     if (tail_size == 128)
         sha1_block(state, tail + 64);
@@ -203,9 +200,8 @@ static size_t frame_header(uint8_t *header, uint8_t opcode, size_t size)
         return 4;
     }
     header[1] = 127;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 8; ++i)
         header[2 + i] = (uint8_t)((uint64_t)size >> ((7 - i) * 8));
-    }
     return 10;
 }
 
@@ -710,9 +706,8 @@ static void on_frame(nw_ws_svr *svr, nw_ses *ses, nw_ws_conn *conn, uint8_t *fra
     uint8_t *out = in - 4;
     uint8_t mask[4];
     memcpy(mask, out, 4);
-    for (size_t i = 0; i < size; ++i) {
+    for (size_t i = 0; i < size; ++i)
         out[i] = in[i] ^ mask[i & 3];
-    }
     out[size] = '\0';
     char *payload = (char *)out;
 
@@ -940,7 +935,7 @@ static nw_ws_svr *ws_svr_new(nw_ws_svr_cfg *cfg, nw_ws_svr_type *type, void *pri
     if (cfg->origin && cfg->origin[0])
         svr->origin = strdup(cfg->origin);
     svr->conn_cache = nw_cache_create(sizeof(nw_ws_conn));
-    if (svr->conn_cache == NULL || (cfg->protocol && cfg->protocol[0] && svr->protocol == NULL) || \
+    if (svr->conn_cache == NULL || (cfg->protocol && cfg->protocol[0] && svr->protocol == NULL) ||
             (cfg->origin && cfg->origin[0] && svr->origin == NULL)) {
         ws_svr_free(svr);
         return NULL;

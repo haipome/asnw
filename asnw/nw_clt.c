@@ -15,9 +15,8 @@
 static int create_socket(int family, int sock_type)
 {
     int sockfd = socket(family, sock_type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-    if (sockfd < 0) {
+    if (sockfd < 0)
         return -1;
-    }
     if (sock_type == SOCK_STREAM && (family == AF_INET || family == AF_INET6)) {
         if (nw_sock_set_no_delay(sockfd) < 0) {
             close(sockfd);
@@ -31,12 +30,10 @@ static int create_socket(int family, int sock_type)
 /* best effort: a refused buffer size is not a reason to drop the connection */
 static void set_socket_option(nw_clt *clt, int sockfd)
 {
-    if (clt->read_mem > 0) {
+    if (clt->read_mem > 0)
         nw_sock_set_recv_buf(sockfd, clt->read_mem);
-    }
-    if (clt->write_mem > 0) {
+    if (clt->write_mem > 0)
         nw_sock_set_send_buf(sockfd, clt->write_mem);
-    }
 }
 
 /* local address of a unix dgram client, unique per process and per start,
@@ -54,7 +51,7 @@ static void reconnect_later(nw_clt *clt, double delay);
 
 static void on_reconnect_timeout(nw_timer *timer, void *privdata)
 {
-    nw_clt *clt = (nw_clt *)privdata;
+    nw_clt *clt = privdata;
     if (nw_clt_start(clt) < 0) {
         /* could not even create a socket (out of fds ...), keep trying */
         reconnect_later(clt, clt->reconnect_timeout);
@@ -74,7 +71,7 @@ static bool try_next_addr(nw_clt *clt);
 
 static void on_connect_timeout(nw_timer *timer, void *privdata)
 {
-    nw_clt *clt = (nw_clt *)privdata;
+    nw_clt *clt = privdata;
     if (clt->on_connect_called)
         return;
     if (try_next_addr(clt))
@@ -218,14 +215,12 @@ static void on_connect(nw_ses *ses, bool result)
         clt->resolve_again = true;
         set_socket_option(clt, clt->ses.sockfd);
         nw_sock_local_addr(ses->sockfd, ses->local_addr);
-        if (clt->type.on_connect) {
+        if (clt->type.on_connect)
             clt->type.on_connect(ses, result);
-        }
     } else {
         uint32_t generation = clt->generation;
-        if (clt->type.on_connect) {
+        if (clt->type.on_connect)
             clt->type.on_connect(ses, result);
-        }
         /* stopped or started again from the callback: the application has
          * taken over, this attempt is not ours to finish any more */
         if (generation != clt->generation)
@@ -238,9 +233,8 @@ static void on_error(nw_ses *ses, const char *msg)
 {
     nw_clt *clt = (nw_clt *)ses;
     uint32_t generation = clt->generation;
-    if (clt->type.on_error_msg) {
+    if (clt->type.on_error_msg)
         clt->type.on_error_msg(ses, msg);
-    }
     if (generation != clt->generation)
         return;
     if (ses->sock_type == SOCK_DGRAM)
@@ -395,9 +389,8 @@ int nw_clt_start(nw_clt *clt)
 static int connect_to_peer(nw_clt *clt)
 {
     int sockfd = create_socket(clt->ses.peer_addr.family, clt->ses.sock_type);
-    if (sockfd < 0) {
+    if (sockfd < 0)
         return -1;
-    }
     clt->ses.sockfd = sockfd;
     /* the family can change from one address of a name to the next */
     clt->ses.local_addr->family = clt->ses.peer_addr.family;
@@ -427,9 +420,8 @@ static int connect_to_peer(nw_clt *clt)
             on_connect(&clt->ses, false);
             return 0;
         }
-        if (!clt->on_connect_called) {
+        if (!clt->on_connect_called)
             watch_connect(clt);
-        }
         return 0;
     } else {
         clt->connected = true;
@@ -469,9 +461,8 @@ void nw_clt_release(nw_clt *clt)
      * into the memory freed below */
     clt_close(clt);
     nw_ses_release(&clt->ses);
-    if (!clt->custom_buf_pool && clt->buf_pool) {
+    if (!clt->custom_buf_pool && clt->buf_pool)
         nw_buf_pool_release(clt->buf_pool);
-    }
     free(clt->ses.local_addr);
     free(clt->name);
     free(clt->addrs);

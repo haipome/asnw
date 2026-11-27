@@ -27,23 +27,20 @@ void nw_timer_set(nw_timer *timer, double interval, bool repeated, nw_timer_call
 
 void nw_timer_start(nw_timer *timer)
 {
-    if (!ev_is_active(&timer->ev)) {
+    if (!ev_is_active(&timer->ev))
         ev_timer_start(timer->loop, &timer->ev);
-    }
 }
 
 void nw_timer_stop(nw_timer *timer)
 {
-    if (ev_is_active(&timer->ev)) {
+    if (ev_is_active(&timer->ev))
         ev_timer_stop(timer->loop, &timer->ev);
-    }
 }
 
 bool nw_timer_active(nw_timer *timer)
 {
-    if (ev_is_active(&timer->ev)) {
+    if (ev_is_active(&timer->ev))
         return true;
-    }
     return false;
 }
 

@@ -92,7 +92,7 @@ int nw_sock_local_addr(int sockfd, nw_addr *addr)
     return -1;
 }
 
-static int nw_sock_addr_fill_inet(nw_addr *addr, const char *host, const char *port)
+static int addr_fill_inet(nw_addr *addr, const char *host, const char *port)
 {
     /* the port must be a plain decimal number in 0..65535 */
     if (*port < '0' || *port > '9')
@@ -105,17 +105,15 @@ static int nw_sock_addr_fill_inet(nw_addr *addr, const char *host, const char *p
     memset(addr, 0, sizeof(nw_addr));
     if (strchr(host, ':') == NULL) {
         addr->in.sin_family = AF_INET;
-        if (inet_pton(addr->in.sin_family, host, &addr->in.sin_addr) <= 0) {
+        if (inet_pton(addr->in.sin_family, host, &addr->in.sin_addr) <= 0)
             return -1;
-        }
         addr->in.sin_port = htons(port_num);
         addr->family = addr->in.sin_family;
         addr->addrlen = sizeof(addr->in);
     } else {
         addr->in6.sin6_family = AF_INET6;
-        if (inet_pton(addr->in6.sin6_family, host, &addr->in6.sin6_addr) <= 0) {
+        if (inet_pton(addr->in6.sin6_family, host, &addr->in6.sin6_addr) <= 0)
             return -1;
-        }
         addr->in6.sin6_port = htons(port_num);
         addr->family = addr->in6.sin6_family;
         addr->addrlen = sizeof(addr->in6);
@@ -124,12 +122,11 @@ static int nw_sock_addr_fill_inet(nw_addr *addr, const char *host, const char *p
     return 0;
 }
 
-static int nw_sock_addr_fill_unix(nw_addr *addr, const char *unix_path)
+static int addr_fill_unix(nw_addr *addr, const char *unix_path)
 {
     size_t pathlen = strlen(unix_path);
-    if (pathlen == 0 || pathlen >= sizeof(addr->un.sun_path)) {
+    if (pathlen == 0 || pathlen >= sizeof(addr->un.sun_path))
         return -1;
-    }
     memset(addr, 0, sizeof(nw_addr));
     addr->un.sun_family = AF_UNIX;
     strcpy(addr->un.sun_path, unix_path);
@@ -192,12 +189,12 @@ int nw_sock_addr_parse(const char *str, nw_addr *addr, int *sock_type)
         }
         *sep = '\0';
         char *port = sep + 1;
-        if (nw_sock_addr_fill_inet(addr, host, port) < 0) {
+        if (addr_fill_inet(addr, host, port) < 0) {
             free(s);
             return -4;
         }
     } else {
-        if (nw_sock_addr_fill_unix(addr, name) < 0) {
+        if (addr_fill_unix(addr, name) < 0) {
             free(s);
             return -5;
         }

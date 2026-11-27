@@ -567,7 +567,7 @@ static const char *http_date(nw_http_svr *svr)
 
 static bool is_auto_header(nw_http_header *header)
 {
-    return nw_http_header_is(header, "Content-Length") || nw_http_header_is(header, "Connection") || \
+    return nw_http_header_is(header, "Content-Length") || nw_http_header_is(header, "Connection") ||
         nw_http_header_is(header, "Transfer-Encoding");
 }
 
