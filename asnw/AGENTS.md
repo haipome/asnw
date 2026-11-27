@@ -247,7 +247,9 @@ Words that mean one thing each:
 
 Style, as in the existing files: 4 spaces, `# include` and `# define` with
 a space after `#`, `snake_case` with the `nw_` prefix for everything
-public, static helpers without it. Comments are short lower-case English
+public, static helpers without it, no braces around a single statement
+that stands alone, no cast where a `void *` is assigned. Comments are
+short lower-case English
 and say why, not what. A public function or callback is documented in the
 header, where its users look.
 
