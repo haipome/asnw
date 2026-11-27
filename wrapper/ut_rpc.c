@@ -44,11 +44,12 @@ int rpc_decode(nw_ses *ses, void *data, size_t max)
     pkg->magic     = le32toh(pkg->magic);
     pkg->command   = le32toh(pkg->command);
     pkg->pkg_type  = le16toh(pkg->pkg_type);
+    pkg->ext_size  = le16toh(pkg->ext_size);
     pkg->result    = le32toh(pkg->result);
     pkg->sequence  = le32toh(pkg->sequence);
     pkg->req_id    = le64toh(pkg->req_id);
     pkg->body_size = le32toh(pkg->body_size);
-    pkg->ext_size  = le16toh(pkg->ext_size);
+    pkg->resv      = le32toh(pkg->resv);
 
     return pkg_size;
 }
@@ -80,11 +81,12 @@ int rpc_send(nw_ses *ses, rpc_pkg *pkg)
     pkg->magic     = htole32(RPC_PKG_MAGIC);
     pkg->command   = htole32(pkg->command);
     pkg->pkg_type  = htole16(pkg->pkg_type);
+    pkg->ext_size  = htole16(pkg->ext_size);
     pkg->result    = htole32(pkg->result);
     pkg->sequence  = htole32(pkg->sequence);
     pkg->req_id    = htole64(pkg->req_id);
     pkg->body_size = htole32(pkg->body_size);
-    pkg->ext_size  = htole16(pkg->ext_size);
+    pkg->resv      = 0;
 
     pkg->crc32 = 0;
     pkg->crc32 = htole32(generate_crc32(send_buf, pkg_size));

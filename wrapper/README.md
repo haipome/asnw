@@ -39,22 +39,23 @@ Kill the first server and the client moves to the second.
 ## The packet
 
 ```
-| header, 36 bytes | ext, ext_size bytes | body, body_size bytes |
+| header, 40 bytes | ext, ext_size bytes | body, body_size bytes |
 ```
 
-All integers are little endian. The header:
+All integers are little endian, and every field of the header sits at a multiple of its own size. The header:
 
 | Offset | Size | Field | Meaning |
 |-------:|-----:|-------|---------|
 | 0 | 4 | `magic` | `0x70656562`, filled in by `rpc_send` |
 | 4 | 4 | `command` | What to do, defined by the application. 0 is the heartbeat |
 | 8 | 2 | `pkg_type` | 0 request, 1 reply, 2 push |
-| 10 | 4 | `result` | Result code of a reply, defined by the application |
-| 14 | 4 | `crc32` | Checksum of the whole packet, filled in by `rpc_send` |
-| 18 | 4 | `sequence` | Set by the requester and copied into the reply, to match the two |
-| 22 | 8 | `req_id` | An id for the application, e.g. to trace a request across services |
-| 30 | 4 | `body_size` | Size of the body |
-| 34 | 2 | `ext_size` | Size of the ext block |
+| 10 | 2 | `ext_size` | Size of the ext block |
+| 12 | 4 | `result` | Result code of a reply, defined by the application |
+| 16 | 4 | `crc32` | Checksum of the whole packet, filled in by `rpc_send` |
+| 20 | 4 | `sequence` | Set by the requester and copied into the reply, to match the two |
+| 24 | 8 | `req_id` | An id for the application, e.g. to trace a request across services |
+| 32 | 4 | `body_size` | Size of the body |
+| 36 | 4 | `resv` | Reserved: sent as 0, not looked at on receive |
 
 - A whole packet is at most 1M (`RPC_MAX_PKG_SIZE`), the ext block at most 65535 bytes.
 - The content of ext and body is up to the application. ext is meant for what travels with a request but is not part of it, such as routing or tracing data.

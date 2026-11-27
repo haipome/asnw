@@ -17,7 +17,7 @@ int main(void)
     rpc_pkg *pkg = (rpc_pkg *)buf;
     pkg->magic = RPC_PKG_MAGIC;
     pkg->command = 100;
-    pkg->body_size = 0xFFFFFFF0u;       /* head(36) + 0 + this wraps to 20 */
+    pkg->body_size = 0xFFFFFFF0u;       /* head(40) + 0 + this wraps to 24 */
     pkg->crc32 = 0;
     uint32_t wrapped = (uint32_t)(RPC_PKG_HEAD_SIZE + pkg->body_size);
     pkg->crc32 = generate_crc32(buf, wrapped);

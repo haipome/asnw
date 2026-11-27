@@ -6,6 +6,7 @@
 # ifndef _UT_RPC_H_
 # define _UT_RPC_H_
 
+# include <stddef.h>
 # include <stdint.h>
 # include "nw_ses.h"
 
@@ -37,9 +38,9 @@
 # define RPC_PKG_TYPE_REPLY   1
 # define RPC_PKG_TYPE_PUSH    2
 
-/* the header as it is on the wire (packed), followed by two pointers that
- * exist in memory only */
-# pragma pack(1)
+/* the header as it is on the wire, 40 bytes, followed by two pointers
+ * that exist in memory only. every field sits at a multiple of its own
+ * size, so the struct needs no packing */
 typedef struct rpc_pkg {
     /* RPC_PKG_MAGIC, filled in by rpc_send */
     uint32_t magic;
@@ -47,6 +48,8 @@ typedef struct rpc_pkg {
     uint32_t command;
     /* RPC_PKG_TYPE_REQUEST, RPC_PKG_TYPE_REPLY or RPC_PKG_TYPE_PUSH */
     uint16_t pkg_type;
+    /* size of ext in bytes */
+    uint16_t ext_size;
     /* result code of a reply, defined by the application */
     uint32_t result;
     /* checksum of the whole packet, filled in by rpc_send and verified by
@@ -58,17 +61,17 @@ typedef struct rpc_pkg {
     uint64_t req_id;
     /* size of body in bytes */
     uint32_t body_size;
-    /* size of ext in bytes */
-    uint16_t ext_size;
+    /* reserved: sent as 0, not looked at on receive */
+    uint32_t resv;
     /* not on the wire. to send: point them at your data. on receive: they
      * point into the read buffer and are only valid during on_recv_pkg */
     void   * ext;
     void   * body;
 } rpc_pkg;
-# pragma pack()
 
 /* size of the header on the wire */
-# define RPC_PKG_HEAD_SIZE (sizeof(rpc_pkg) - sizeof(void *) * 2)
+# define RPC_PKG_HEAD_SIZE offsetof(rpc_pkg, ext)
+_Static_assert(RPC_PKG_HEAD_SIZE == 40, "the header of rpc_pkg is 40 bytes on the wire");
 
 /*
  * the decode_pkg callback for nw_svr / nw_clt. checks magic, size and
@@ -82,8 +85,8 @@ int rpc_decode(nw_ses *ses, void *data, size_t max);
 
 /*
  * send a packet. set command, pkg_type, result, sequence, req_id, ext,
- * ext_size, body and body_size (memset the rpc_pkg to 0 first); magic and
- * crc32 are filled in. pkg is not modified, ext and body are copied.
+ * ext_size, body and body_size (memset the rpc_pkg to 0 first); magic,
+ * crc32 and resv are filled in. pkg is not modified, ext and body are copied.
  * return 0 on success, -1 if the packet is bigger than RPC_MAX_PKG_SIZE or
  * nw_ses_send failed (see there). call it on the thread ses belongs to.
  */
