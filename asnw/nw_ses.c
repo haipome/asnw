@@ -71,6 +71,21 @@ static void watch_connect(nw_ses *ses)
     ev_io_start(ses->loop, &ses->ev);
 }
 
+/* tell the session that a system call failed: "<what> error: <why>" */
+static void report_errno(nw_ses *ses, const char *what)
+{
+    char errmsg[100];
+    snprintf(errmsg, sizeof(errmsg), "%s error: %m", what);
+    ses->on_error(ses, errmsg);
+}
+
+static void report_decode_error(nw_ses *ses, int ret)
+{
+    char errmsg[100];
+    snprintf(errmsg, sizeof(errmsg), "decode msg error: %d", ret);
+    ses->on_error(ses, errmsg);
+}
+
 /* returns the number of bytes written; if less than size, errno tells why */
 static size_t write_stream(nw_ses *ses, const void *data, size_t size)
 {
@@ -188,9 +203,7 @@ static bool stream_decode(nw_ses *ses)
     while ((size = nw_buf_size(ses->read_buf)) > 0) {
         int ret = ses->decode_pkg(ses, ses->read_buf->data + ses->read_buf->rpos, size);
         if (ret < 0) {
-            char errmsg[100];
-            snprintf(errmsg, sizeof(errmsg), "decode msg error: %d", ret);
-            ses->on_error(ses, errmsg);
+            report_decode_error(ses, ret);
             return false;
         } else if (ret > 0) {
             ses->on_recv_pkg(ses, ses->read_buf->data + ses->read_buf->rpos, ret);
@@ -229,6 +242,196 @@ static bool stream_decode(nw_ses *ses)
     return true;
 }
 
+/* read what is there and hand the complete messages to the application */
+static void read_stream(nw_ses *ses)
+{
+    if (ses->resume_decode) {
+        /* messages held back while reading was paused */
+        ses->resume_decode = false;
+        if (!stream_decode(ses))
+            return;
+    }
+    while (true) {
+        size_t want = nw_buf_avail(ses->read_buf);
+        int ret = read(ses->sockfd, ses->read_buf->data + ses->read_buf->wpos, want);
+        if (ret < 0) {
+            if (errno == EINTR) {
+                continue;
+            } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            } else {
+                report_errno(ses, "read");
+                return;
+            }
+        } else if (ret == 0) {
+            on_peer_done(ses);
+            return;
+        } else {
+            ses->read_buf->wpos += ret;
+            ses->active_time = ev_now(ses->loop);
+        }
+        if (ses->closing) {
+            /* shutting down: read on, so that the peer's close is
+             * seen, but nobody wants the data any more */
+            ses->read_buf->rpos = ses->read_buf->wpos = 0;
+        } else if (!stream_decode(ses)) {
+            return;
+        }
+        /* less than asked for: the socket is empty, another read
+         * would only say so. what comes next, the end of the
+         * stream included, is announced by the event loop */
+        if ((size_t)ret < want)
+            break;
+    }
+    if (nw_buf_size(ses->read_buf) == 0) {
+        nw_buf_free(ses->pool, ses->read_buf);
+        ses->read_buf = NULL;
+    }
+}
+
+/* every datagram is a message, or nothing */
+static void read_dgram(nw_ses *ses)
+{
+    while (true) {
+        /* paused by the callback: the rest stays in the kernel */
+        if (ses->read_paused)
+            break;
+        /* addrlen is value-result: it must be reset before every call,
+         * otherwise a short source address truncates all later ones */
+        nw_addr from;
+        memset(&from, 0, sizeof(from));
+        from.addrlen = sizeof(from.un);
+        /* MSG_TRUNC: the length of the datagram, even if it did not
+         * fit and only its beginning was put into the buf */
+        int ret = recvfrom(ses->sockfd, ses->read_buf->data, ses->read_buf->size, MSG_TRUNC,
+                NW_SOCKADDR(&from), &from.addrlen);
+        if (ret < 0) {
+            if (errno == EINTR) {
+                continue;
+            } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            } else {
+                report_errno(ses, "recvfrom");
+                return;
+            }
+        }
+        from.family = from.addrlen ? NW_SOCKADDR(&from)->sa_family : ses->peer_addr.family;
+        if (ses->ses_type == NW_SES_TYPE_CLIENT) {
+            /* a client keeps talking to the configured server: its
+             * peer_addr is never replaced by a source address, and
+             * inet datagrams from anybody else are dropped */
+            if (!dgram_from_peer(&ses->peer_addr, &from))
+                continue;
+        } else {
+            /* a server replies to the sender of the current datagram */
+            memcpy(&ses->peer_addr, &from, sizeof(nw_addr));
+        }
+        if ((size_t)ret > ses->read_buf->size) {
+            /* the beginning of a datagram is not a message */
+            char errmsg[100];
+            snprintf(errmsg, sizeof(errmsg), "datagram of %d bytes dropped, max_pkg_size is %u", ret, ses->read_buf->size);
+            ses->on_error(ses, errmsg);
+            if (!ses->read_buf)
+                return;
+            continue;
+        }
+        int pkg_size = ret;
+        ret = ses->decode_pkg(ses, ses->read_buf->data, pkg_size);
+        if (ret < 0) {
+            report_decode_error(ses, ret);
+            if (!ses->read_buf)
+                return;
+            continue;
+        }
+        if (ret == 0) {
+            /* not a full message: a datagram can't be completed later, drop it */
+            continue;
+        }
+        ses->on_recv_pkg(ses, ses->read_buf->data, ret);
+        if (!ses->read_buf)
+            return;
+    }
+    nw_buf_free(ses->pool, ses->read_buf);
+    ses->read_buf = NULL;
+}
+
+/* every packet is a message, or a file descriptor that comes along */
+static void read_packet(nw_ses *ses)
+{
+    while (true) {
+        if (ses->read_paused)
+            break;
+        struct msghdr msg;
+        struct iovec io;
+        char control[CMSG_SPACE(sizeof(int))];
+
+        memset(&msg, 0, sizeof(msg));
+        io.iov_base = ses->read_buf->data;
+        io.iov_len = ses->read_buf->size;
+        msg.msg_iov = &io;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control;
+        msg.msg_controllen = sizeof(control);
+
+        /* a file descriptor that comes along is close-on-exec */
+        int ret = recvmsg(ses->sockfd, &msg, MSG_CMSG_CLOEXEC);
+        if (ret < 0) {
+            if (errno == EINTR) {
+               continue;
+            } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                break;
+            } else {
+                report_errno(ses, "recvmsg");
+                return;
+            }
+        } else if (ret == 0) {
+            on_peer_done(ses);
+            return;
+        }
+        ses->active_time = ev_now(ses->loop);
+
+        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+        if (cmsg != NULL) {
+            if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
+                int fd;
+                memcpy(&fd, CMSG_DATA(cmsg), sizeof(fd));
+                if (ses->closing) {
+                    close(fd);
+                    continue;
+                }
+                ses->on_recv_fd(ses, fd);
+                /* the callback may have closed this session */
+                if (!ses->read_buf)
+                    return;
+            }
+        } else {
+            if (ses->closing)
+                continue;
+            if (msg.msg_flags & MSG_TRUNC) {
+                /* too big a packet: an error, as too big a message on
+                 * a stream */
+                ses->on_error(ses, "packet larger than max_pkg_size");
+                return;
+            }
+            int pkg_size = ret;
+            ret = ses->decode_pkg(ses, ses->read_buf->data, pkg_size);
+            if (ret < 0) {
+                report_decode_error(ses, ret);
+                return;
+            }
+            if (ret == 0) {
+                /* not a full message: a packet can't be completed later, drop it */
+                continue;
+            }
+            ses->on_recv_pkg(ses, ses->read_buf->data, ret);
+            if (!ses->read_buf)
+                return;
+        }
+    }
+    nw_buf_free(ses->pool, ses->read_buf);
+    ses->read_buf = NULL;
+}
+
 static void on_can_read(nw_ses *ses)
 {
     if (ses->sockfd < 0 || ses->read_paused)
@@ -243,201 +446,13 @@ static void on_can_read(nw_ses *ses)
 
     switch (ses->sock_type) {
     case SOCK_STREAM:
-        {
-            if (ses->resume_decode) {
-                /* messages held back while reading was paused */
-                ses->resume_decode = false;
-                if (!stream_decode(ses))
-                    return;
-            }
-            while (true) {
-                size_t want = nw_buf_avail(ses->read_buf);
-                int ret = read(ses->sockfd, ses->read_buf->data + ses->read_buf->wpos, want);
-                if (ret < 0) {
-                    if (errno == EINTR) {
-                        continue;
-                    } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        break;
-                    } else {
-                        char errmsg[100];
-                        snprintf(errmsg, sizeof(errmsg), "read error: %m");
-                        ses->on_error(ses, errmsg);
-                        return;
-                    }
-                } else if (ret == 0) {
-                    on_peer_done(ses);
-                    return;
-                } else {
-                    ses->read_buf->wpos += ret;
-                    ses->active_time = ev_now(ses->loop);
-                }
-                if (ses->closing) {
-                    /* shutting down: read on, so that the peer's close is
-                     * seen, but nobody wants the data any more */
-                    ses->read_buf->rpos = ses->read_buf->wpos = 0;
-                } else if (!stream_decode(ses)) {
-                    return;
-                }
-                /* less than asked for: the socket is empty, another read
-                 * would only say so. what comes next, the end of the
-                 * stream included, is announced by the event loop */
-                if ((size_t)ret < want)
-                    break;
-            }
-            if (nw_buf_size(ses->read_buf) == 0) {
-                nw_buf_free(ses->pool, ses->read_buf);
-                ses->read_buf = NULL;
-            }
-        }
+        read_stream(ses);
         break;
     case SOCK_DGRAM:
-        {
-            while (true) {
-                /* paused by the callback: the rest stays in the kernel */
-                if (ses->read_paused)
-                    break;
-                /* addrlen is value-result: it must be reset before every call,
-                 * otherwise a short source address truncates all later ones */
-                nw_addr from;
-                memset(&from, 0, sizeof(from));
-                from.addrlen = sizeof(from.un);
-                /* MSG_TRUNC: the length of the datagram, even if it did not
-                 * fit and only its beginning was put into the buf */
-                int ret = recvfrom(ses->sockfd, ses->read_buf->data, ses->read_buf->size, MSG_TRUNC,
-                        NW_SOCKADDR(&from), &from.addrlen);
-                if (ret < 0) {
-                    if (errno == EINTR) {
-                        continue;
-                    } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        break;
-                    } else {
-                        char errmsg[100];
-                        snprintf(errmsg, sizeof(errmsg), "recvfrom error: %m");
-                        ses->on_error(ses, errmsg);
-                        return;
-                    }
-                }
-                from.family = from.addrlen ? NW_SOCKADDR(&from)->sa_family : ses->peer_addr.family;
-                if (ses->ses_type == NW_SES_TYPE_CLIENT) {
-                    /* a client keeps talking to the configured server: its
-                     * peer_addr is never replaced by a source address, and
-                     * inet datagrams from anybody else are dropped */
-                    if (!dgram_from_peer(&ses->peer_addr, &from))
-                        continue;
-                } else {
-                    /* a server replies to the sender of the current datagram */
-                    memcpy(&ses->peer_addr, &from, sizeof(nw_addr));
-                }
-                if ((size_t)ret > ses->read_buf->size) {
-                    /* the beginning of a datagram is not a message */
-                    char errmsg[100];
-                    snprintf(errmsg, sizeof(errmsg), "datagram of %d bytes dropped, max_pkg_size is %u", ret, ses->read_buf->size);
-                    ses->on_error(ses, errmsg);
-                    if (!ses->read_buf)
-                        return;
-                    continue;
-                }
-                int pkg_size = ret;
-                ret = ses->decode_pkg(ses, ses->read_buf->data, pkg_size);
-                if (ret < 0) {
-                    char errmsg[100];
-                    snprintf(errmsg, sizeof(errmsg), "decode msg error: %d", ret);
-                    ses->on_error(ses, errmsg);
-                    if (!ses->read_buf)
-                        return;
-                    continue;
-                }
-                if (ret == 0) {
-                    /* not a full message: a datagram can't be completed later, drop it */
-                    continue;
-                }
-                ses->on_recv_pkg(ses, ses->read_buf->data, ret);
-                if (!ses->read_buf)
-                    return;
-            }
-            nw_buf_free(ses->pool, ses->read_buf);
-            ses->read_buf = NULL;
-        }
+        read_dgram(ses);
         break;
     case SOCK_SEQPACKET:
-        {
-            while (true) {
-                if (ses->read_paused)
-                    break;
-                struct msghdr msg;
-                struct iovec io;
-                char control[CMSG_SPACE(sizeof(int))];
-
-                memset(&msg, 0, sizeof(msg));
-                io.iov_base = ses->read_buf->data;
-                io.iov_len = ses->read_buf->size;
-                msg.msg_iov = &io;
-                msg.msg_iovlen = 1;
-                msg.msg_control = control;
-                msg.msg_controllen = sizeof(control);
-
-                /* a file descriptor that comes along is close-on-exec */
-                int ret = recvmsg(ses->sockfd, &msg, MSG_CMSG_CLOEXEC);
-                if (ret < 0) {
-                    if (errno == EINTR) {
-                       continue;
-                    } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        break;
-                    } else {
-                        char errmsg[100];
-                        snprintf(errmsg, sizeof(errmsg), "recvmsg error: %m");
-                        ses->on_error(ses, errmsg);
-                        return;
-                    }
-                } else if (ret == 0) {
-                    on_peer_done(ses);
-                    return;
-                }
-                ses->active_time = ev_now(ses->loop);
-
-                struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
-                if (cmsg != NULL) {
-                    if (cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS) {
-                        int fd;
-                        memcpy(&fd, CMSG_DATA(cmsg), sizeof(fd));
-                        if (ses->closing) {
-                            close(fd);
-                            continue;
-                        }
-                        ses->on_recv_fd(ses, fd);
-                        /* the callback may have closed this session */
-                        if (!ses->read_buf)
-                            return;
-                    }
-                } else {
-                    if (ses->closing)
-                        continue;
-                    if (msg.msg_flags & MSG_TRUNC) {
-                        /* too big a packet: an error, as too big a message on
-                         * a stream */
-                        ses->on_error(ses, "packet larger than max_pkg_size");
-                        return;
-                    }
-                    int pkg_size = ret;
-                    ret = ses->decode_pkg(ses, ses->read_buf->data, pkg_size);
-                    if (ret < 0) {
-                        char errmsg[100];
-                        snprintf(errmsg, sizeof(errmsg), "decode msg error: %d", ret);
-                        ses->on_error(ses, errmsg);
-                        return;
-                    }
-                    if (ret == 0) {
-                        /* not a full message: a packet can't be completed later, drop it */
-                        continue;
-                    }
-                    ses->on_recv_pkg(ses, ses->read_buf->data, ret);
-                    if (!ses->read_buf)
-                        return;
-                }
-            }
-            nw_buf_free(ses->pool, ses->read_buf);
-            ses->read_buf = NULL;
-        }
+        read_packet(ses);
         break;
     }
 }
@@ -471,9 +486,7 @@ static void on_can_write(nw_ses *ses)
                 ses->on_close(ses);
                 return;
             } else {
-                char errmsg[100];
-                snprintf(errmsg, sizeof(errmsg), "write error: %m");
-                ses->on_error(ses, errmsg);
+                report_errno(ses, "write");
                 return;
             }
         }
@@ -528,9 +541,7 @@ static void on_can_accept(nw_ses *ses)
                 if (shed < 0 || ses->sockfd < 0)
                     return;
             } else {
-                char errmsg[100];
-                snprintf(errmsg, sizeof(errmsg), "accept error: %m");
-                ses->on_error(ses, errmsg);
+                report_errno(ses, "accept");
                 return;
             }
         } else {
@@ -677,12 +688,63 @@ int nw_ses_stop(nw_ses *ses)
     return 0;
 }
 
+/* the three below send when nothing is queued: what the socket does not
+ * take now is queued, and written when it can take more */
+static int send_stream(nw_ses *ses, const void *data, size_t size)
+{
+    size_t nwrite = write_stream(ses, data, size);
+    if (nwrite < size) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (nw_buf_list_write(ses->write_buf, data + nwrite, size - nwrite) != (size - nwrite)) {
+                ses->on_error(ses, "no send buf");
+                return -1;
+            }
+            ses->write_pending += size - nwrite;
+            watch_read_write(ses);
+        } else {
+            report_errno(ses, "write");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int send_dgram(nw_ses *ses, const void *data, size_t size)
+{
+    int ret = sendto(ses->sockfd, data, size, MSG_NOSIGNAL, NW_SOCKADDR(&ses->peer_addr), ses->peer_addr.addrlen);
+    if (ret < 0) {
+        report_errno(ses, "sendto");
+        return -1;
+    }
+    return 0;
+}
+
+static int send_packet(nw_ses *ses, const void *data, size_t size)
+{
+    int ret = write_packet(ses, data, size);
+    if (ret < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (nw_buf_list_append(ses->write_buf, data, size) != size) {
+                ses->on_error(ses, "no send buf");
+                return -1;
+            }
+            ses->write_pending += size;
+            watch_read_write(ses);
+        } else {
+            report_errno(ses, "sendmsg");
+            return -1;
+        }
+    }
+    return 0;
+}
+
 int nw_ses_send(nw_ses *ses, const void *data, size_t size)
 {
     if (ses->sockfd < 0 || ses->closing)
         return -1;
 
     if (ses->write_buf->count > 0) {
+        /* behind what is waiting already */
         size_t nwrite;
         if (ses->sock_type == SOCK_STREAM) {
             nwrite = nw_buf_list_write(ses->write_buf, data, size);
@@ -694,64 +756,17 @@ int nw_ses_send(nw_ses *ses, const void *data, size_t size)
             return -1;
         }
         ses->write_pending += size;
-    } else {
-        switch (ses->sock_type) {
-        case SOCK_STREAM:
-            {
-                size_t nwrite = write_stream(ses, data, size);
-                if (nwrite < size) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        if (nw_buf_list_write(ses->write_buf, data + nwrite, size - nwrite) != (size - nwrite)) {
-                            ses->on_error(ses, "no send buf");
-                            return -1;
-                        }
-                        ses->write_pending += size - nwrite;
-                        watch_read_write(ses);
-                    } else {
-                        char errmsg[100];
-                        snprintf(errmsg, sizeof(errmsg), "write error: %m");
-                        ses->on_error(ses, errmsg);
-                        return -1;
-                    }
-                }
-            }
-            break;
-        case SOCK_DGRAM:
-            {
-                int ret = sendto(ses->sockfd, data, size, MSG_NOSIGNAL, NW_SOCKADDR(&ses->peer_addr), ses->peer_addr.addrlen);
-                if (ret < 0) {
-                    char errmsg[100];
-                    snprintf(errmsg, sizeof(errmsg), "sendto error: %m");
-                    ses->on_error(ses, errmsg);
-                    return -1;
-                }
-            }
-            break;
-        case SOCK_SEQPACKET:
-            {
-                int ret = write_packet(ses, data, size);
-                if (ret < 0) {
-                    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                        if (nw_buf_list_append(ses->write_buf, data, size) != size) {
-                            ses->on_error(ses, "no send buf");
-                            return -1;
-                        }
-                        ses->write_pending += size;
-                        watch_read_write(ses);
-                    } else {
-                        char errmsg[100];
-                        snprintf(errmsg, sizeof(errmsg), "sendmsg error: %m");
-                        ses->on_error(ses, errmsg);
-                        return -1;
-                    }
-                }
-            }
-            break;
-        default:
-            break;
-        }
+        return 0;
     }
 
+    switch (ses->sock_type) {
+    case SOCK_STREAM:
+        return send_stream(ses, data, size);
+    case SOCK_DGRAM:
+        return send_dgram(ses, data, size);
+    case SOCK_SEQPACKET:
+        return send_packet(ses, data, size);
+    }
     return 0;
 }
 
