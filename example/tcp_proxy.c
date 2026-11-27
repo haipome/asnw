@@ -64,8 +64,9 @@ static nw_clt_type up_type;
 static struct link *dead;
 static nw_timer reaper;
 
-/* both ends are gone. the nw_clt can't be released here, we may be inside
- * one of its callbacks: a timer does it on the next turn of the loop */
+/* release the links that were buried. not done in bury itself: there we
+ * may be inside a callback of the nw_clt, which must not be released from
+ * one, so a timer does it on the next turn of the loop */
 static void on_reap(nw_timer *timer, void *privdata)
 {
     while (dead) {
@@ -77,6 +78,13 @@ static void on_reap(nw_timer *timer, void *privdata)
     }
 }
 
+/* called only when both ends are gone, by the one that ends last:
+ *
+ *   the server first, the client later:  on_close of the client, which
+ *                                        finds up_gone set
+ *   the client first, the server later:  up_on_close, which finds
+ *                                        down_gone set
+ */
 static void bury(struct link *link)
 {
     link->next = dead;
