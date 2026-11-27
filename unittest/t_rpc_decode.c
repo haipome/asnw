@@ -12,9 +12,9 @@
 
 /* a well formed packet that does not start at a multiple of 8, as the
  * second packet in a read buffer does when the first has an odd size.
- * rpc_decode used to read the header through a rpc_pkg pointer, which is
- * only allowed for an aligned address once the struct is no longer packed
- * (regression, caught by UBSan). */
+ * rpc_decode reads the header through a rpc_pkg pointer, which is allowed
+ * at any address only because the struct is packed: without the pragma
+ * UBSan stops here (regression). */
 static void test_unaligned(void)
 {
     char store[256];
@@ -48,7 +48,7 @@ int main(void)
 {
     test_unaligned();
 
-    _Alignas(rpc_pkg) char buf[256];
+    char buf[256];
     memset(buf, 0, sizeof(buf));
     rpc_pkg *pkg = (rpc_pkg *)buf;
     pkg->magic = RPC_PKG_MAGIC;

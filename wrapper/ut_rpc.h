@@ -40,7 +40,10 @@
 
 /* the header as it is on the wire, 40 bytes, followed by two pointers
  * that exist in memory only. every field sits at a multiple of its own
- * size, so the struct needs no packing */
+ * size. packed all the same: a packet starts wherever the one before it
+ * ended, and the header is read where it lies, through a rpc_pkg pointer
+ * that only a packed struct allows at any address */
+# pragma pack(1)
 typedef struct rpc_pkg {
     /* RPC_PKG_MAGIC, filled in by rpc_send */
     uint32_t magic;
@@ -68,6 +71,7 @@ typedef struct rpc_pkg {
     void   * ext;
     void   * body;
 } rpc_pkg;
+# pragma pack()
 
 /* size of the header on the wire */
 # define RPC_PKG_HEAD_SIZE offsetof(rpc_pkg, ext)
