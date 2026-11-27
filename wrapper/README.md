@@ -46,7 +46,7 @@ All integers are little endian, and every field of the header sits at a multiple
 
 | Offset | Size | Field | Meaning |
 |-------:|-----:|-------|---------|
-| 0 | 4 | `magic` | `0x70656562`, filled in by `rpc_send` |
+| 0 | 4 | `magic` | `0x6d637072`, the bytes `rpcm` on the wire, filled in by `rpc_send` |
 | 4 | 4 | `command` | What to do, defined by the application. 0 is the heartbeat |
 | 8 | 2 | `pkg_type` | 0 request, 1 reply, 2 push |
 | 10 | 2 | `ext_size` | Size of the ext block |

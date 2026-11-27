@@ -28,8 +28,8 @@
 
 /* max size of a whole packet: header + ext + body */
 # define RPC_MAX_PKG_SIZE (1024*1024)
-/* first 4 bytes of every packet */
-# define RPC_PKG_MAGIC 0x70656562
+/* first 4 bytes of every packet: "rpcm" on the wire, rpc message */
+# define RPC_PKG_MAGIC 0x6d637072
 
 /* pkg_type. the library does not interpret it, it is a convention between
  * the two ends: a request expects a reply carrying the same sequence, a

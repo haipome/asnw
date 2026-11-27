@@ -63,7 +63,7 @@ int rpc_send(nw_ses *ses, rpc_pkg *pkg)
         return -1;
 
     /* the packet is put together on the stack, a big one on the heap */
-    char small_buf[4096];
+    char small_buf[65536];
     void *send_buf = small_buf;
     if (pkg_size > sizeof(small_buf)) {
         send_buf = malloc(pkg_size);
