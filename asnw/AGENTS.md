@@ -138,8 +138,11 @@ HTTP server sets `on_request` in `nw_http_svr_type` and answers with
     before it exits; on the main thread it is also what stops the threads
     of `nw_dns` and `nw_req`.
 
-11. **Per connection data** comes from `on_privdata_alloc` /
-    `on_privdata_free` in `nw_svr_type` and is found in `ses->privdata`;
+11. **Per connection data** is `ses->privdata`. It comes from
+    `on_privdata_alloc` / `on_privdata_free` in `nw_svr_type`, or, in a
+    server without `on_privdata_alloc`, the application sets it in
+    `on_open` and cleans up in `on_close`. On a connection of `nw_http` or
+    `nw_ws` it belongs to that module (`nw_ws_privdata` is the place there);
     `ses->svr` is the `nw_svr`, and `svr->privdata` is what was given to
     `nw_svr_create`. For a client `ses->privdata` is what was given to
     `nw_clt_create`.

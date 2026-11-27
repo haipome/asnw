@@ -158,7 +158,9 @@ typedef struct nw_svr_type {
     /* optional
      *
      * called when a connection has been added to the server and can be
-     * used. ses->id, ses->peer_addr and ses->privdata are set */
+     * used. ses->id, ses->peer_addr and ses->privdata are set. a server
+     * without on_privdata_alloc may put a pointer of its own into
+     * ses->privdata here */
     void (*on_open)(nw_ses *ses);
     /* optional
      *
@@ -220,12 +222,16 @@ typedef struct nw_svr_type {
      *
      * called for every new connection, before on_open. the
      * return value becomes ses->privdata: the place for your per connection
-     * state. svr is the nw_svr. returning NULL rejects the connection */
+     * state. svr is the nw_svr. returning NULL rejects the connection.
+     *
+     * without it ses->privdata is NULL in on_open and yours to set, there
+     * or later. clean up after it in on_close, or in on_privdata_free */
     void *(*on_privdata_alloc)(void *svr);
     /* optional
      *
-     * called when a connection is closed, after on_close, to
-     * free what on_privdata_alloc returned */
+     * called when a connection is closed, after on_close, with what
+     * ses->privdata holds, unless that is NULL: what on_privdata_alloc
+     * returned, or what you put there yourself */
     void (*on_privdata_free)(void *svr, void *privdata);
 } nw_svr_type;
 
