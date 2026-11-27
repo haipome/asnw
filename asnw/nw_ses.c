@@ -166,11 +166,6 @@ static int shed_connection(nw_ses *ses)
     return ret;
 }
 
-/*
- * hand the complete messages in the read buffer of a stream session to
- * the application. return false if on_can_read has to stop there: the
- * session was closed, or its reading was paused by the callback.
- */
 /* read returned 0: the peer has sent all it had to. it may be gone, or half
  * closed and waiting for the answer; the two look the same. what is queued is
  * sent first (to a peer that is gone the write fails, which closes the
@@ -186,6 +181,11 @@ static void on_peer_done(nw_ses *ses)
     watch_update(ses);
 }
 
+/*
+ * hand the complete messages in the read buffer of a stream session to
+ * the application. return false if on_can_read has to stop there: the
+ * session was closed, or its reading was paused by the callback.
+ */
 static bool stream_decode(nw_ses *ses)
 {
     size_t size = 0;

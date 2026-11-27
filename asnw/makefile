@@ -13,6 +13,7 @@ clean :
 	rm -rf *.d *.o $(TARGET)
 
 $(TARGET) : $(OBJS)
+	rm -f $@
 	ar -rs $@ $^
 .c.o :
 	$(CC) $(CFLAGS) -c -o $@ $< $(INCS)
