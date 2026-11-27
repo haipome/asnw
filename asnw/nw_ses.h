@@ -153,6 +153,7 @@ int nw_ses_send_fd(nw_ses *ses, int fd);
  * e.g. to pass data from `up` to `down` without piling it up: after
  * sending to down, pause up if nw_ses_pending(down) is over your mark;
  * in on_drain of down, resume up. the kernel then makes the sender wait.
+ * example/tcp_proxy.c does this in both directions.
  */
 
 /* bytes accepted by nw_ses_send and not written to the socket yet. 0 for a

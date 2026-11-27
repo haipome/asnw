@@ -6,6 +6,7 @@ all:
 	gcc ws_server.c -I ../asnw/ -L ../asnw/ -lasnw -lev -lpthread -std=gnu11 -g -o ws_server
 	gcc hub_server.c -I ../asnw/ -L ../asnw/ -lasnw -lev -lpthread -std=gnu11 -g -o hub_server
 	gcc req_get.c -I ../asnw/ -L ../asnw/ -lasnw -lev -lpthread -std=gnu11 -g -o req_get
+	gcc tcp_proxy.c -I ../asnw/ -L ../asnw/ -lasnw -lev -lpthread -std=gnu11 -g -o tcp_proxy
 
 clean:
-	rm -rf echo_server ping_clt listener_worker http_server ws_server hub_server req_get
+	rm -rf echo_server ping_clt listener_worker http_server ws_server hub_server req_get tcp_proxy
