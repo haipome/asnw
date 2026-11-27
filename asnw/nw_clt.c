@@ -12,6 +12,48 @@
 
 # include "nw_clt.h"
 
+/*
+ * the states of a client, and what tells them apart:
+ *
+ *   stopped      no socket, no timer. after nw_clt_create and nw_clt_stop
+ *   resolving    by name only: dns_query is set, the name is being looked up
+ *   connecting   a socket whose connect is on its way. timer is the connect
+ *                timeout, on_connect_called says that the answer has come
+ *   connected    connected is true, on_connect(true) has been called
+ *   waiting      no socket. timer brings the next attempt
+ *
+ * and how one becomes the other:
+ *
+ *   nw_clt_start  -> resolving, or connecting if there is an address to try
+ *   resolving     -> connecting, or waiting if the lookup failed
+ *   connecting    -> connected
+ *                 -> connecting, at once and without a word, if the name
+ *                    has another address (try_next_addr)
+ *                 -> waiting, if it was refused: on_connect(false), on_close
+ *                 -> connecting again at once, if no answer came within
+ *                    reconnect_timeout: on_close
+ *   connected     -> waiting, when the peer closes or on an error: on_close
+ *   waiting       -> nw_clt_start, when timer fires
+ *   any           -> stopped, by nw_clt_stop: on_close
+ *
+ * a dgram client has no connecting state, it is connected as soon as it
+ * has a socket, and an error does not close it.
+ *
+ * the application may stop or start the client from inside a callback,
+ * and the code after the callback has to notice:
+ *
+ *   in_on_close       on_close is running. a nw_clt_stop from inside it is
+ *   close_requested   only noted here, and the close in progress then
+ *                     leaves the client stopped instead of waiting
+ *   generation        counts every nw_clt_start and nw_clt_stop. the code
+ *                     that called on_connect(false) or on_error_msg goes
+ *                     on only if it has not changed
+ *
+ * resolve_again: the next start looks the name up again. set while
+ * stopped and once connected, clear while the addresses of one lookup
+ * are being tried.
+ */
+
 static int create_socket(int family, int sock_type)
 {
     int sockfd = socket(family, sock_type | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
