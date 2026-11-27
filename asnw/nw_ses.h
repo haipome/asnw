@@ -18,7 +18,8 @@
  * events.
  *
  * as a user you get a nw_ses in every callback. what you do with it:
- *   - read its fields: peer_addr, local_addr, id, privdata, svr, sock_type
+ *   - read its fields: peer_addr, local_addr, id, svr, sock_type
+ *   - keep what you know about the connection in privdata
  *   - send with nw_ses_send (and nw_ses_send_fd)
  *   - control the flow, if you need to: see "flow control" below
  * create, start and close sessions through nw_svr / nw_clt, not with the
@@ -61,8 +62,10 @@ typedef struct nw_ses {
      * and never 0. it is 0 for other sessions and after close. see the
      * session lifetime note in nw_svr.h */
     uint64_t id;
-    /* user data. nw_svr connection: what on_privdata_alloc returned.
-     * nw_clt: the privdata given to nw_clt_create */
+    /* user data. nw_svr connection: what on_privdata_alloc returned, or,
+     * without that callback, what you put here yourself, see nw_svr.h.
+     * nw_clt: the privdata given to nw_clt_create. on a connection of
+     * nw_http or nw_ws it belongs to that module */
     void *privdata;
     /* the nw_svr this session belongs to, NULL for a nw_clt session */
     void *svr;
@@ -81,6 +84,10 @@ typedef struct nw_ses {
      * more can be sent on it and what it still receives is thrown away */
     bool closing;
     bool write_shut;
+    /* the peer has sent all it had to (read returned 0) while there was
+     * still something to send to it: nothing more is read, and the session
+     * is closed when the rest is out or cannot be sent */
+    bool peer_done;
     double close_deadline;
     /* flow control, see nw_ses_pending and nw_ses_pause_read */
     size_t write_pending;

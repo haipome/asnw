@@ -67,9 +67,11 @@ $(B)/%.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 $(LIB): $(LIB_OBJ)
+	rm -f $@
 	ar rcs $@ $^
 
 $(RPC_LIB): $(RPC_OBJ)
+	rm -f $@
 	ar rcs $@ $^
 
 $(B)/%: $(B)/%.o $(RPC_LIB) $(LIB)

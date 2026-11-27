@@ -567,7 +567,7 @@ static const char *http_date(nw_http_svr *svr)
 
 static bool is_auto_header(nw_http_header *header)
 {
-    return nw_http_header_is(header, "Content-Length") || nw_http_header_is(header, "Connection") || \
+    return nw_http_header_is(header, "Content-Length") || nw_http_header_is(header, "Connection") ||
         nw_http_header_is(header, "Transfer-Encoding");
 }
 
@@ -1046,7 +1046,6 @@ static nw_http_svr *http_svr_new(nw_http_svr_cfg *cfg, nw_http_svr_type *type, v
             http_svr_free(svr);
             return NULL;
         }
-        /* on the loop of the thread the connections are on */
         nw_timer_set(&svr->continue_timer, 0, false, on_continue_timer, svr);
     }
     if (raw_cfg_out)

@@ -144,7 +144,6 @@ static int worker_post(struct nw_hub_worker *worker, struct event *event)
     return 0;
 }
 
-/* take everything that is queued, in one go */
 static struct event *worker_take(struct nw_hub_worker *worker)
 {
     pthread_mutex_lock(&worker->lock);
@@ -161,9 +160,8 @@ static void broadcast_here(nw_svr *svr, const void *data, size_t size)
     nw_svr_iterator iter;
     nw_ses *ses;
     nw_svr_iter_init(&iter, svr);
-    while ((ses = nw_svr_next(&iter)) != NULL) {
+    while ((ses = nw_svr_next(&iter)) != NULL)
         nw_ses_send(ses, data, size);
-    }
 }
 
 static void worker_handle(struct nw_hub_worker *worker, struct event *event)
@@ -173,10 +171,8 @@ static void worker_handle(struct nw_hub_worker *worker, struct event *event)
 
     switch (event->type) {
     case EVENT_ADD_FD:
-        if (!worker->exit && nw_svr_add_accepted_fd(svr, event->bind_index, event->fd, (nw_addr *)event->data) == 0) {
-            /* the connection has it now */
+        if (!worker->exit && nw_svr_add_accepted_fd(svr, event->bind_index, event->fd, (nw_addr *)event->data) == 0)
             event->fd = -1;
-        }
         break;
     case EVENT_SEND:
         nw_svr_send(svr, event->id, event->data, event->size);
@@ -289,9 +285,8 @@ static void *worker_main(void *arg)
     worker_report(worker, WORKER_READY);
 
     /* a callback that calls nw_loop_break by mistake does not end the worker */
-    while (!worker->exit) {
+    while (!worker->exit)
         nw_loop_run();
-    }
 
     /* close the connections, then let the application clean up. other
      * workers may still be running and sending here: from now on they are
@@ -300,12 +295,10 @@ static void *worker_main(void *arg)
     nw_svr_iterator iter;
     nw_ses *ses;
     nw_svr_iter_init(&iter, worker->svr);
-    while ((ses = nw_svr_next(&iter)) != NULL) {
+    while ((ses = nw_svr_next(&iter)) != NULL)
         nw_svr_close(worker->svr, ses);
-    }
-    if (hub->type.on_thread_stop) {
+    if (hub->type.on_thread_stop)
         hub->type.on_thread_stop(hub, worker->index);
-    }
 
     ev_async_stop(worker->loop, &worker->wakeup);
     worker_svr_release(worker);

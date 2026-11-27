@@ -84,12 +84,9 @@ static bool given_up(struct nw_req *req)
     return __atomic_load_n(&req->cancelled, __ATOMIC_RELAXED) || __atomic_load_n(req->stopping, __ATOMIC_RELAXED);
 }
 
-/*
- * wait until fd is ready or the time is up. 1: ready, 0: time is up, -1:
- * poll failed. the wait is cut in short pieces to notice a request that
- * nobody waits for any more; that one is reported as out of time, to
- * nobody.
- */
+/* wait until fd is ready (1), the time is up (0) or poll failed (-1). in
+ * short pieces, to notice a request that was given up: that one is reported
+ * as out of time */
 static int wait_fd(struct nw_req *req, int fd, short events, double until)
 {
     for (;;) {
@@ -242,17 +239,27 @@ static ssize_t find_crlf(const char *data, size_t from, size_t to)
 
 /* cut the header lines into names and values, in place. data may still
  * move while the body is read, so offsets are kept, not pointers */
-static void split_head(struct nw_req *req)
+static int split_head(struct nw_req *req)
 {
     char *data = req->data;
-    size_t pos = find_crlf(data, 0, req->head_size) + 2;
+    ssize_t line_end = find_crlf(data, 0, req->head_size);
+    if (line_end < 0)
+        return fail(req, NW_REQ_ERR_RESPONSE, "not a http response");
+    size_t pos = line_end + 2;
     for (;;) {
-        size_t end = find_crlf(data, pos, req->head_size);
+        line_end = find_crlf(data, pos, req->head_size);
+        if (line_end < 0)
+            return fail(req, NW_REQ_ERR_RESPONSE, "not a http response");
+        size_t end = line_end;
         if (end == pos)
             break;
         size_t next = end + 2;
         char *colon = memchr(data + pos, ':', end - pos);
-        if (colon && colon != data + pos && req->header_count < NW_REQ_MAX_HEADERS) {
+        if (colon && colon != data + pos) {
+            /* one that is left out could be the one that says where the
+             * body ends: no guessing */
+            if (req->header_count == NW_REQ_MAX_HEADERS)
+                return fail(req, NW_REQ_ERR_RESPONSE, "more than %d headers in the response", NW_REQ_MAX_HEADERS);
             size_t name_end = colon - data;
             size_t value = name_end + 1;
             while (name_end > pos && (data[name_end - 1] == ' ' || data[name_end - 1] == '\t'))
@@ -269,6 +276,7 @@ static void split_head(struct nw_req *req)
         }
         pos = next;
     }
+    return 0;
 }
 
 static const char *head_value(struct nw_req *req, const char *name)
@@ -323,8 +331,7 @@ static int read_head(struct nw_req *req, int fd)
         req->head_size = 0;
         scanned = 0;
     }
-    split_head(req);
-    return 0;
+    return split_head(req);
 }
 
 /*
@@ -512,9 +519,9 @@ static int pool_init(void)
     return 0;
 }
 
-/* "http://host[:port][/path][?query]" into what the worker needs: the
- * host and port to connect to, and the request as it is sent, with its
- * body if there is one (content_type is NULL for a request without) */
+/* "http://host[:port][/path][?query]" into the host and port to connect to
+ * and the request as it is sent, body included (content_type is NULL without
+ * one) */
 static int build_request(struct nw_req *req, const char *method, const char *url,
         const char *content_type, const void *body, size_t size)
 {

@@ -46,15 +46,10 @@ static void set_timer(nw_svr *svr, double interval)
     svr->timer_interval = interval;
 }
 
-/*
- * walk the connections: close the ones done shutting down, report the
- * ones whose idle timeout or deadline has passed.
- *
- * on the way, note the shortest timeout that is still in force, and let
- * that decide when to look again. so the timer runs as often as the
- * connections of the moment need - not as often as some connection once
- * needed - and stops when none of them has anything to wait for.
- */
+/* walk the connections: close the ones done shutting down, report the ones
+ * whose idle timeout or deadline has passed. the shortest timeout still in
+ * force decides when to look again, so the timer follows the connections of
+ * the moment and stops when none of them needs it */
 static void on_timer(nw_timer *timer, void *privdata)
 {
     nw_svr *svr = privdata;
@@ -159,31 +154,26 @@ static int create_socket(int family, int sock_type)
 /* best effort: a refused buffer size is not a reason to drop the connection */
 static void set_socket_option(nw_svr *svr, int sockfd)
 {
-    if (svr->read_mem > 0) {
+    if (svr->read_mem > 0)
         nw_sock_set_recv_buf(sockfd, svr->read_mem);
-    }
-    if (svr->write_mem > 0) {
+    if (svr->write_mem > 0)
         nw_sock_set_send_buf(sockfd, svr->write_mem);
-    }
 }
 
 static void on_error(nw_ses *ses, const char *msg)
 {
-    nw_svr *svr = (nw_svr *)ses->svr;
-    if (svr->type.on_error_msg) {
+    nw_svr *svr = ses->svr;
+    if (svr->type.on_error_msg)
         svr->type.on_error_msg(ses, msg);
-    }
-    if (ses->ses_type == NW_SES_TYPE_COMMON) {
+    if (ses->ses_type == NW_SES_TYPE_COMMON)
         nw_svr_close(svr, ses);
-    }
 }
 
 static void on_close(nw_ses *ses)
 {
-    nw_svr *svr = (nw_svr *)ses->svr;
-    if (ses->ses_type == NW_SES_TYPE_COMMON) {
+    nw_svr *svr = ses->svr;
+    if (ses->ses_type == NW_SES_TYPE_COMMON)
         nw_svr_close(svr, ses);
-    }
 }
 
 static void on_recv_fd(nw_ses *ses, int fd)
@@ -192,14 +182,13 @@ static void on_recv_fd(nw_ses *ses, int fd)
 }
 
 /* the single place that frees a server; also used on a half built one */
-static void nw_svr_free(nw_svr *svr)
+static void svr_free(nw_svr *svr)
 {
     if (svr->binds) {
         for (uint32_t i = 0; i < svr->bind_count; ++i) {
             nw_ses *ses = &svr->binds[i];
-            if (ses->write_buf != NULL) {
+            if (ses->write_buf != NULL)
                 nw_ses_release(ses);
-            }
             free(ses->local_addr);
         }
         free(svr->binds);
@@ -214,32 +203,29 @@ static void nw_svr_free(nw_svr *svr)
     free(svr);
 }
 
-static int nw_svr_add_clt(nw_ses *ses, int sockfd, nw_addr *peer_addr)
+static int svr_add_clt(nw_ses *ses, int sockfd, nw_addr *peer_addr)
 {
-    nw_svr *svr = (nw_svr *)ses->svr;
+    nw_svr *svr = ses->svr;
     set_socket_option(svr, sockfd);
 
     void *privdata = NULL;
     if (svr->type.on_privdata_alloc) {
         privdata = svr->type.on_privdata_alloc(svr);
-        if (privdata == NULL) {
+        if (privdata == NULL)
             return -1;
-        }
     }
 
     nw_ses *clt = nw_cache_alloc(svr->ses_cache);
     if (clt == NULL) {
-        if (privdata) {
+        if (privdata)
             svr->type.on_privdata_free(svr, privdata);
-        }
         return -1;
     }
     memset(clt, 0, sizeof(nw_ses));
     if (nw_ses_init(clt, nw_default_loop, svr->buf_pool, svr->buf_limit, NW_SES_TYPE_COMMON) < 0) {
         nw_cache_free(svr->ses_cache, clt);
-        if (privdata) {
+        if (privdata)
             svr->type.on_privdata_free(svr, privdata);
-        }
         return -1;
     }
     memcpy(&clt->peer_addr, peer_addr, sizeof(nw_addr));
@@ -258,9 +244,8 @@ static int nw_svr_add_clt(nw_ses *ses, int sockfd, nw_addr *peer_addr)
         clt->sockfd = -1;
         nw_ses_release(clt);
         nw_cache_free(svr->ses_cache, clt);
-        if (privdata) {
+        if (privdata)
             svr->type.on_privdata_free(svr, privdata);
-        }
         return -1;
     }
 
@@ -278,42 +263,43 @@ static int nw_svr_add_clt(nw_ses *ses, int sockfd, nw_addr *peer_addr)
         need_timer(svr, clt->idle_timeout);
     nw_ses_start(clt);
 
-    if (svr->type.on_open) {
+    if (svr->type.on_open)
         svr->type.on_open(clt);
-    }
 
     return 0;
 }
 
 static int on_accept(nw_ses *ses, int sockfd, nw_addr *peer_addr)
 {
-    nw_svr *svr = (nw_svr *)ses->svr;
-    if (svr->type.on_accept) {
+    nw_svr *svr = ses->svr;
+    if (svr->type.on_accept)
         return svr->type.on_accept(ses, sockfd, peer_addr);
-    }
-    return nw_svr_add_clt(ses, sockfd, peer_addr);
+    return svr_add_clt(ses, sockfd, peer_addr);
 }
 
 int nw_svr_add_fd(nw_svr *svr, int fd)
 {
     nw_addr peer_addr;
-    if (nw_sock_peer_addr(fd, &peer_addr) < 0) {
+    if (nw_sock_peer_addr(fd, &peer_addr) < 0)
         return -1;
-    }
     /* it comes from somewhere else: make it what an accepted one is */
-    if (nw_sock_set_nonblock(fd) < 0 || nw_sock_set_cloexec(fd) < 0) {
+    if (nw_sock_set_nonblock(fd) < 0 || nw_sock_set_cloexec(fd) < 0)
         return -1;
-    }
+    /* the first bind of its kind: same family, same type of socket */
+    int sock_type;
+    socklen_t len = sizeof(sock_type);
+    if (getsockopt(fd, SOL_SOCKET, SO_TYPE, &sock_type, &len) < 0)
+        return -1;
     nw_ses *ses = NULL;
     for (uint32_t i = 0; i < svr->bind_count; ++i) {
-        if (peer_addr.family == svr->binds[i].local_addr->family) {
+        if (peer_addr.family == svr->binds[i].local_addr->family && sock_type == svr->binds[i].sock_type) {
             ses = &svr->binds[i];
             break;
         }
     }
     if (ses == NULL)
         return -1;
-    return nw_svr_add_clt(ses, fd, &peer_addr);
+    return svr_add_clt(ses, fd, &peer_addr);
 }
 
 int nw_svr_add_accepted_fd(nw_svr *svr, uint32_t bind_index, int fd, nw_addr *peer_addr)
@@ -323,18 +309,13 @@ int nw_svr_add_accepted_fd(nw_svr *svr, uint32_t bind_index, int fd, nw_addr *pe
     nw_ses *ses = &svr->binds[bind_index];
     if (ses->sock_type == SOCK_DGRAM)
         return -1;
-    return nw_svr_add_clt(ses, fd, peer_addr);
+    return svr_add_clt(ses, fd, peer_addr);
 }
 
-/*
- * the pool of bufs and the cache of sessions keep what the busiest moment
- * took. once a minute, what they have no use for any more is given back:
- * as many free ones stay as there are in use, and the shrink functions
- * never leave less than 64, so a server at work keeps what it works with
- * and a small one is left alone. this runs from a timer because nothing
- * may be freed while a callback of a connection is on its way, see
- * nw_buf.h.
- */
+/* once a minute, give back the bufs and sessions left over from a busier
+ * time: as many free ones stay as are in use, and the shrink functions keep
+ * at least 64. from a timer, because nothing may be freed while a callback of
+ * a connection is running, see nw_buf.h */
 static void on_shrink_timer(nw_timer *timer, void *privdata)
 {
     nw_svr *svr = privdata;
@@ -365,22 +346,22 @@ nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
     svr->bind_count = cfg->bind_count;
     svr->binds = calloc(svr->bind_count, sizeof(nw_ses));
     if (svr->binds == NULL) {
-        nw_svr_free(svr);
+        svr_free(svr);
         return NULL;
     }
     svr->buf_pool = nw_buf_pool_create(cfg->max_pkg_size);
     if (svr->buf_pool == NULL) {
-        nw_svr_free(svr);
+        svr_free(svr);
         return NULL;
     }
     svr->ses_cache = nw_cache_create(sizeof(nw_ses));
     if (svr->ses_cache == NULL) {
-        nw_svr_free(svr);
+        svr_free(svr);
         return NULL;
     }
     svr->ses_dict = nw_dict_create(0);
     if (svr->ses_dict == NULL) {
-        nw_svr_free(svr);
+        svr_free(svr);
         return NULL;
     }
     svr->idle_timeout = cfg->idle_timeout > 0 ? cfg->idle_timeout : 0;
@@ -392,20 +373,20 @@ nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
         nw_ses *ses = &svr->binds[i];
         int sockfd = create_socket(cfg->binds[i].addr.family, cfg->binds[i].sock_type);
         if (sockfd < 0) {
-            nw_svr_free(svr);
+            svr_free(svr);
             return NULL;
         }
         nw_addr *local_addr = malloc(sizeof(nw_addr));
         if (local_addr == NULL) {
             close(sockfd);
-            nw_svr_free(svr);
+            svr_free(svr);
             return NULL;
         }
         memcpy(local_addr, &cfg->binds[i].addr, sizeof(nw_addr));
         if (nw_ses_init(ses, nw_default_loop, svr->buf_pool, svr->buf_limit, NW_SES_TYPE_SERVER) < 0) {
             close(sockfd);
             free(local_addr);
-            nw_svr_free(svr);
+            svr_free(svr);
             return NULL;
         }
         ses->sockfd      = sockfd;
@@ -427,9 +408,8 @@ nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
         }
     }
 
-    /* from now until nw_svr_release, started or not: the servers of a
-     * nw_hub never are. the loop does not count this timer among the
-     * things it runs for, so a loop with nothing else to do still returns */
+    /* from create to release, started or not: the servers of a nw_hub never
+     * are. unref, so that the loop does not run for its sake */
     nw_timer_set(&svr->shrink_timer, NW_SVR_SHRINK_INTERVAL, true, on_shrink_timer, svr);
     nw_timer_start(&svr->shrink_timer);
     ev_unref(svr->shrink_timer.loop);
@@ -441,12 +421,10 @@ int nw_svr_start(nw_svr *svr)
 {
     for (uint32_t i = 0; i < svr->bind_count; ++i) {
         nw_ses *ses = &svr->binds[i];
-        if (nw_ses_bind(ses, ses->local_addr) < 0) {
+        if (nw_ses_bind(ses, ses->local_addr) < 0)
             return -1;
-        }
-        if (nw_ses_start(ses) < 0) {
+        if (nw_ses_start(ses) < 0)
             return -1;
-        }
     }
 
     return 0;
@@ -455,9 +433,8 @@ int nw_svr_start(nw_svr *svr)
 int nw_svr_stop(nw_svr *svr)
 {
     for (uint32_t i = 0; i < svr->bind_count; ++i) {
-        if (nw_ses_stop(&svr->binds[i]) < 0) {
+        if (nw_ses_stop(&svr->binds[i]) < 0)
             return -1;
-        }
     }
     return 0;
 }
@@ -466,16 +443,15 @@ void nw_svr_release(nw_svr *svr)
 {
     nw_svr_stop(svr);
     nw_timer_stop(&svr->timer);
-    /* it was not counted, see nw_svr_create: count it again to stop it */
+    /* undo the unref of nw_svr_create */
     ev_ref(svr->shrink_timer.loop);
     nw_timer_stop(&svr->shrink_timer);
     nw_svr_iterator iter;
     nw_ses *curr;
     nw_svr_iter_init(&iter, svr);
-    while ((curr = nw_svr_next(&iter)) != NULL) {
+    while ((curr = nw_svr_next(&iter)) != NULL)
         nw_svr_close(svr, curr);
-    }
-    nw_svr_free(svr);
+    svr_free(svr);
 }
 
 void nw_svr_close(nw_svr *svr, nw_ses *ses)
@@ -485,26 +461,19 @@ void nw_svr_close(nw_svr *svr, nw_ses *ses)
     if (ses->ses_type != NW_SES_TYPE_COMMON)
         return;
 
-    /*
-     * take the connection out of the server BEFORE telling the application.
-     * whatever on_close does then - send on this connection,
-     * close it again, close others whose own callbacks look for this one -
-     * cannot get back in here for it: it is not found by id any more, a
-     * second close stops at the line below, and sending fails quietly
-     * instead of reporting an error that would close it once more.
-     */
+    /* take the connection out of the server BEFORE telling the application:
+     * whatever on_close does (send on it, close it again, close others that
+     * look for it) cannot get back in here for it */
     if (nw_dict_del(svr->ses_dict, ses->id) < 0)
         return;
     svr->ses_count--;
     ses->closing = true;
     nw_ses_stop(ses);
 
-    if (svr->type.on_close) {
+    if (svr->type.on_close)
         svr->type.on_close(ses);
-    }
-    if (ses->privdata) {
+    if (ses->privdata && svr->type.on_privdata_free)
         svr->type.on_privdata_free(svr, ses->privdata);
-    }
     nw_ses_release(ses);
     nw_cache_free(svr->ses_cache, ses);
 }

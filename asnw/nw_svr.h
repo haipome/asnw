@@ -59,20 +59,19 @@
  * sent yet. to say something last and be sure it arrives, send it and
  * call nw_svr_shutdown.
  *
+ * a peer that has finished sending and still reads (a tcp client that
+ * calls shutdown(SHUT_WR) after its request) gets what was already queued
+ * for it, then the connection is closed. an answer produced later, by a
+ * job for instance, finds it closed.
+ *
  * memory
  *
  * a connection with unfinished input holds one buf of max_pkg_size bytes,
- * and what waits to be sent is kept in such bufs. they come from the pool
- * of the server, which reuses them, as its cache reuses the memory of the
- * sessions. once a minute the server gives what it has no use for back to
- * the system: it keeps as many free bufs as it has in use, and at least
- * 64, and the same for sessions. so the memory of a peak is returned
- * within a minute or two, a server under steady load keeps what it works
- * with, and a small one is left alone. there is nothing to set and
- * nothing to call.
- *
- * one more reason not to keep a nw_ses pointer: the memory of a closed
- * session is reused by a later connection, or given back to the system.
+ * and what waits to be sent is kept in such bufs. bufs and sessions are
+ * reused. once a minute the server gives back to the system what it has
+ * no use for, keeping as many free ones as are in use and at least 64:
+ * nothing to set, nothing to call. the memory of a closed session is thus
+ * reused or gone, one more reason never to keep a nw_ses pointer.
  *
  * datagrams
  *
@@ -99,8 +98,9 @@ typedef struct nw_svr_cfg {
      *
      * max size of one message, in bytes. it is also the size of the bufs:
      * every connection with unfinished input holds one, and the pending
-     * send list is made of them. a stream connection sending a message
-     * bigger than this is closed */
+     * send list is made of them. a stream or seqpacket connection sending
+     * a message bigger than this is closed; a datagram bigger than this is
+     * dropped, and on_error_msg is told */
     uint32_t max_pkg_size;
     /* max number of bufs in the pending send list of a connection, i.e. a
      * connection can have up to buf_limit * max_pkg_size bytes waiting to
@@ -158,7 +158,9 @@ typedef struct nw_svr_type {
     /* optional
      *
      * called when a connection has been added to the server and can be
-     * used. ses->id, ses->peer_addr and ses->privdata are set */
+     * used. ses->id, ses->peer_addr and ses->privdata are set. a server
+     * without on_privdata_alloc may put a pointer of its own into
+     * ses->privdata here */
     void (*on_open)(nw_ses *ses);
     /* optional
      *
@@ -220,12 +222,16 @@ typedef struct nw_svr_type {
      *
      * called for every new connection, before on_open. the
      * return value becomes ses->privdata: the place for your per connection
-     * state. svr is the nw_svr. returning NULL rejects the connection */
+     * state. svr is the nw_svr. returning NULL rejects the connection.
+     *
+     * without it ses->privdata is NULL in on_open and yours to set, there
+     * or later. clean up after it in on_close, or in on_privdata_free */
     void *(*on_privdata_alloc)(void *svr);
     /* optional
      *
-     * called when a connection is closed, after on_close, to
-     * free what on_privdata_alloc returned */
+     * called when a connection is closed, after on_close, with what
+     * ses->privdata holds, unless that is NULL: what on_privdata_alloc
+     * returned, or what you put there yourself */
     void (*on_privdata_free)(void *svr, void *privdata);
 } nw_svr_type;
 
@@ -355,8 +361,9 @@ nw_ses *nw_svr_next(nw_svr_iterator *iter);
 /* add an already connected socket to the server as if it had been accepted
  * here, e.g. a fd received from another process in on_recv_fd. it is made
  * non-blocking and close-on-exec. the server must have a bind of the same
- * address family. return 0, or -1 on failure,
- * in which case fd is still yours to close */
+ * address family and the same type of socket: the connection becomes one
+ * of the first such bind. return 0, or -1 on failure, in which case fd is
+ * still yours to close */
 int nw_svr_add_fd(nw_svr *svr, int fd);
 
 /* same for a connection that was accepted somewhere else on the address of

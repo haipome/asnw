@@ -23,9 +23,8 @@ static void *thread_routine(void *data)
 
     for (;;) {
         pthread_mutex_lock(&job->request_lock);
-        while (job->request_head == NULL && !job->shutdown) {
+        while (job->request_head == NULL && !job->shutdown)
             pthread_cond_wait(&job->notify, &job->request_lock);
-        }
         if (job->shutdown) {
             pthread_mutex_unlock(&job->request_lock);
             break;
@@ -85,7 +84,7 @@ static void on_wakeup(struct ev_loop *loop, ev_async *watcher, int events)
     pthread_mutex_unlock(&job->request_lock);
 }
 
-static void nw_job_free(nw_job *job)
+static void job_free(nw_job *job)
 {
     pthread_mutex_destroy(&job->request_lock);
     pthread_mutex_destroy(&job->result_lock);
@@ -131,12 +130,12 @@ nw_job *nw_job_create(nw_job_type *type, int thread_count)
     job->thread_count = thread_count;
     job->threads = calloc(job->thread_count, sizeof(pthread_t));
     if (job->threads == NULL) {
-        nw_job_free(job);
+        job_free(job);
         return NULL;
     }
     job->cache = nw_cache_create(sizeof(nw_job_entry));
     if (job->cache == NULL) {
-        nw_job_free(job);
+        job_free(job);
         return NULL;
     }
     ev_async_init(&job->wakeup, on_wakeup);
@@ -214,12 +213,10 @@ void nw_job_release(nw_job *job)
     pthread_mutex_unlock(&job->request_lock);
     for (int i = 0; i < job->thread_start; ++i) {
         void *privdata = NULL;
-        if (pthread_join(job->threads[i], &privdata) != 0) {
+        if (pthread_join(job->threads[i], &privdata) != 0)
             continue;
-        }
-        if (privdata != NULL && privdata != PTHREAD_CANCELED) {
+        if (privdata != NULL && privdata != PTHREAD_CANCELED)
             job->type.on_release(privdata);
-        }
     }
     ev_async_stop(job->loop, &job->wakeup);
     /* all workers are gone, no lock needed. requests still queued and
@@ -228,5 +225,5 @@ void nw_job_release(nw_job *job)
     drop_entries(job, job->result_head);
     job->request_head = job->request_tail = NULL;
     job->result_head = job->result_tail = NULL;
-    nw_job_free(job);
+    job_free(job);
 }

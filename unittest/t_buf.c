@@ -71,6 +71,48 @@ int main(void)
     CHECK_EQ(again->size, 8);
     nw_buf_free(pool, again);
 
+    /*
+     * giving back never needs memory: the place a buf or an object goes
+     * to when it comes back is made when it is handed out. (it used to be
+     * made when it came back, and when that failed the object was freed
+     * on the spot, while the library may still read it.)
+     */
+    {
+        nw_buf_pool *p = nw_buf_pool_create(8);
+        nw_cache *c = nw_cache_create(32);
+        CHECK(p != NULL && c != NULL);
+        enum { N = 1000 };
+        static nw_buf *bufs[N];
+        static void *things[N];
+        for (int i = 0; i < N; ++i) {
+            CHECK((bufs[i] = nw_buf_alloc(p)) != NULL);
+            CHECK((things[i] = nw_cache_alloc(c)) != NULL);
+            /* room for all that are out, at every moment */
+            CHECK(p->free_total >= p->used + p->free);
+            CHECK(c->free_total >= c->used + c->free);
+        }
+        uint32_t pool_room = p->free_total, cache_room = c->free_total;
+        CHECK(pool_room >= N && cache_room >= N);
+        for (int i = 0; i < N; ++i) {
+            nw_buf_free(p, bufs[i]);
+            nw_cache_free(c, things[i]);
+        }
+        /* all of them are kept, and nothing had to grow for it */
+        CHECK_EQ(p->free, N);
+        CHECK_EQ(c->free, N);
+        CHECK_EQ(p->free_total, pool_room);
+        CHECK_EQ(c->free_total, cache_room);
+        /* taking them again and giving them back changes nothing either */
+        for (int i = 0; i < N; ++i)
+            CHECK((bufs[i] = nw_buf_alloc(p)) != NULL);
+        CHECK_EQ(p->free_total, pool_room);
+        for (int i = 0; i < N; ++i)
+            nw_buf_free(p, bufs[i]);
+        CHECK_EQ(p->free, N);
+        nw_buf_pool_release(p);
+        nw_cache_release(c);
+    }
+
     /* stream write spans bufs and honours the limit */
     nw_buf_list *list = nw_buf_list_create(pool, 3);
     CHECK(list != NULL);

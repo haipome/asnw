@@ -60,6 +60,22 @@ nw_buf_pool *nw_buf_pool_create(uint32_t size)
     return pool;
 }
 
+/* giving back must never need memory (failing, it could only free an object
+ * that may still be read, see nw_buf.h): free_arr always has room for every
+ * buf that is out, and the room for one more is made before it is handed out */
+static int pool_reserve_slot(nw_buf_pool *pool)
+{
+    if (pool->used + pool->free < pool->free_total)
+        return 0;
+    uint32_t new_total = pool->free_total * 2;
+    nw_buf **new_arr = realloc(pool->free_arr, new_total * sizeof(nw_buf *));
+    if (new_arr == NULL)
+        return -1;
+    pool->free_arr = new_arr;
+    pool->free_total = new_total;
+    return 0;
+}
+
 nw_buf *nw_buf_alloc(nw_buf_pool *pool)
 {
     if (pool->free) {
@@ -72,6 +88,8 @@ nw_buf *nw_buf_alloc(nw_buf_pool *pool)
         return buf;
     }
 
+    if (pool_reserve_slot(pool) < 0)
+        return NULL;
     nw_buf *buf = malloc(sizeof(nw_buf) + pool->size);
     if (buf == NULL)
         return NULL;
@@ -88,19 +106,10 @@ void nw_buf_free(nw_buf_pool *pool, nw_buf *buf)
 {
     if (pool->used > 0)
         pool->used--;
-    if (pool->free < pool->free_total) {
+    /* never freed here. with no room (given back twice, or to the wrong pool)
+     * it is leaked */
+    if (pool->free < pool->free_total)
         pool->free_arr[pool->free++] = buf;
-    } else {
-        uint32_t new_free_total = pool->free_total * 2;
-        void *new_arr = realloc(pool->free_arr, new_free_total * sizeof(nw_buf *));
-        if (new_arr) {
-            pool->free_total = new_free_total;
-            pool->free_arr = new_arr;
-            pool->free_arr[pool->free++] = buf;
-        } else {
-            free(buf);
-        }
-    }
 }
 
 uint32_t nw_buf_pool_shrink(nw_buf_pool *pool, uint32_t keep)
@@ -118,9 +127,8 @@ uint32_t nw_buf_pool_shrink(nw_buf_pool *pool, uint32_t keep)
 
 void nw_buf_pool_release(nw_buf_pool *pool)
 {
-    for (uint32_t i = 0; i < pool->free; ++i) {
+    for (uint32_t i = 0; i < pool->free; ++i)
         free(pool->free_arr[i]);
-    }
     free(pool->free_arr);
     free(pool);
 }
@@ -197,9 +205,8 @@ void nw_buf_list_shift(nw_buf_list *list)
     if (list->head) {
         nw_buf *tmp = list->head;
         list->head = tmp->next;
-        if (list->head == NULL) {
+        if (list->head == NULL)
             list->tail = NULL;
-        }
         list->count--;
         nw_buf_free(list->pool, tmp);
     }
@@ -216,7 +223,6 @@ void nw_buf_list_release(nw_buf_list *list)
     }
     free(list);
 }
-
 
 nw_cache *nw_cache_create(uint32_t size)
 {
@@ -237,9 +243,30 @@ nw_cache *nw_cache_create(uint32_t size)
     return cache;
 }
 
+/* as pool_reserve_slot */
+static int cache_reserve_slot(nw_cache *cache)
+{
+    if (cache->used + cache->free < cache->free_total)
+        return 0;
+    uint32_t new_total = cache->free_total * 2;
+    void **new_arr = realloc(cache->free_arr, new_total * sizeof(void *));
+    if (new_arr == NULL)
+        return -1;
+    cache->free_arr = new_arr;
+    cache->free_total = new_total;
+    return 0;
+}
+
 void *nw_cache_alloc(nw_cache *cache)
 {
-    void *obj = cache->free ? cache->free_arr[--cache->free] : malloc(cache->size);
+    void *obj;
+    if (cache->free) {
+        obj = cache->free_arr[--cache->free];
+    } else {
+        if (cache_reserve_slot(cache) < 0)
+            return NULL;
+        obj = malloc(cache->size);
+    }
     if (obj)
         cache->used++;
     return obj;
@@ -249,19 +276,9 @@ void nw_cache_free(nw_cache *cache, void *obj)
 {
     if (cache->used > 0)
         cache->used--;
-    if (cache->free < cache->free_total) {
+    /* never freed here, see nw_buf_free */
+    if (cache->free < cache->free_total)
         cache->free_arr[cache->free++] = obj;
-    } else {
-        uint32_t new_free_total = cache->free_total * 2;
-        void *new_arr = realloc(cache->free_arr, new_free_total * sizeof(void *));
-        if (new_arr) {
-            cache->free_total = new_free_total;
-            cache->free_arr = new_arr;
-            cache->free_arr[cache->free++] = obj;
-        } else {
-            free(obj);
-        }
-    }
 }
 
 uint32_t nw_cache_shrink(nw_cache *cache, uint32_t keep)
@@ -279,9 +296,8 @@ uint32_t nw_cache_shrink(nw_cache *cache, uint32_t keep)
 
 void nw_cache_release(nw_cache *cache)
 {
-    for (uint32_t i = 0; i < cache->free; ++i) {
+    for (uint32_t i = 0; i < cache->free; ++i)
         free(cache->free_arr[i]);
-    }
     free(cache->free_arr);
     free(cache);
 }

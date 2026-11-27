@@ -16,9 +16,8 @@ nw_state *nw_state_create(nw_state_type *type, uint32_t data_size)
 
     nw_loop_init();
     nw_state *state = malloc(sizeof(nw_state));
-    if (state == NULL) {
+    if (state == NULL)
         return NULL;
-    }
     memset(state, 0, sizeof(nw_state));
     state->loop = nw_default_loop;
     state->type = *type;
@@ -76,9 +75,8 @@ nw_state_entry *nw_state_add(nw_state *state, double timeout, uint32_t id)
     if (nw_dict_count(state->dict) == UINT32_MAX)
         return NULL;
     nw_state_entry *entry = nw_cache_alloc(state->cache);
-    if (entry == NULL) {
+    if (entry == NULL)
         return NULL;
-    }
 
     if (id != 0) {
         entry->id = id;

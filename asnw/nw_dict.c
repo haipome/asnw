@@ -188,9 +188,8 @@ void nw_dict_release(nw_dict *dict)
  * returned can be deleted by the caller */
 static void iter_advance(nw_dict_iterator *iter)
 {
-    while (iter->next_entry == NULL && iter->index < iter->dict->size) {
+    while (iter->next_entry == NULL && iter->index < iter->dict->size)
         iter->next_entry = iter->dict->table[iter->index++];
-    }
 }
 
 void nw_dict_iter_init(nw_dict_iterator *iter, nw_dict *dict)

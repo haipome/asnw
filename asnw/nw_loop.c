@@ -15,6 +15,7 @@
 __thread struct ev_loop *nw_default_loop;
 static __thread int initialized;
 static __thread int running;
+static __thread int breaking;
 static __thread ev_timer break_timer;
 static pthread_once_t once = PTHREAD_ONCE_INIT;
 
@@ -50,7 +51,6 @@ void nw_loop_init(void)
     initialized = 1;
 }
 
-/* see nw_loop_at_release */
 # define NW_RELEASE_HOOK_MAX 8
 static __thread void (*release_hooks[NW_RELEASE_HOOK_MAX])(void);
 static __thread int release_hook_count;
@@ -88,22 +88,26 @@ void nw_loop_run(void)
         return;
 
     running = 1;
+    breaking = 0;
     ev_run(nw_default_loop, 0);
     running = 0;
+    breaking = 0;
 }
 
 void nw_loop_break(void)
 {
     if (!initialized)
         return;
-    if (!running)
+    if (!running || breaking)
         return;
 
     /* a nw_loop_break_later still waiting is for this run, not the next */
     if (ev_is_active(&break_timer))
         ev_timer_stop(nw_default_loop, &break_timer);
     ev_break(nw_default_loop, EVBREAK_ALL);
-    running = 0;
+    /* running stays set until ev_run has returned: the callback that is
+     * on the stack must not be able to release the loop */
+    breaking = 1;
 }
 
 static void on_break_timer(struct ev_loop *loop, ev_timer *ev, int events)
@@ -115,7 +119,7 @@ void nw_loop_break_later(double waittime)
 {
     if (!initialized)
         return;
-    if (!running)
+    if (!running || breaking)
         return;
 
     if (!ev_is_active(&break_timer)) {

@@ -138,8 +138,11 @@ HTTP server sets `on_request` in `nw_http_svr_type` and answers with
     before it exits; on the main thread it is also what stops the threads
     of `nw_dns` and `nw_req`.
 
-11. **Per connection data** comes from `on_privdata_alloc` /
-    `on_privdata_free` in `nw_svr_type` and is found in `ses->privdata`;
+11. **Per connection data** is `ses->privdata`. It comes from
+    `on_privdata_alloc` / `on_privdata_free` in `nw_svr_type`, or, in a
+    server without `on_privdata_alloc`, the application sets it in
+    `on_open` and cleans up in `on_close`. On a connection of `nw_http` or
+    `nw_ws` it belongs to that module (`nw_ws_privdata` is the place there);
     `ses->svr` is the `nw_svr`, and `svr->privdata` is what was given to
     `nw_svr_create`. For a client `ses->privdata` is what was given to
     `nw_clt_create`.
@@ -247,7 +250,9 @@ Words that mean one thing each:
 
 Style, as in the existing files: 4 spaces, `# include` and `# define` with
 a space after `#`, `snake_case` with the `nw_` prefix for everything
-public, static helpers without it. Comments are short lower-case English
+public, static helpers without it, no braces around a single statement
+that stands alone, no cast where a `void *` is assigned. Comments are
+short lower-case English
 and say why, not what. A public function or callback is documented in the
 header, where its users look.
 
