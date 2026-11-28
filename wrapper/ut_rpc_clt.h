@@ -1,5 +1,5 @@
 /*
- * Description: ut_rpc client, a nw_clt speaking rpc_pkg with failover
+ * Description: ut_rpc client, a nw_clt speaking rpc_pkg
  *     History: yang@haipo.me, 2016/03/30, create
  */
 
@@ -11,12 +11,12 @@
 # include "nw_timer.h"
 
 /*
- * rpc_clt keeps a connection to one of several equivalent servers. it
- * goes through the list from the first address on, one attempt each and
- * without delay; when none of them answers it waits reconnect_timeout and
- * goes through the list again. a connection that is lost sends it back to
- * the first address at once. heartbeats are sent automatically (see
- * ut_rpc.h).
+ * rpc_clt keeps a connection to one of several equivalent servers, the
+ * way a nw_clt does (see nw_clt.h): they have their turn one after the
+ * other, each may be an address or the name of a host, and the client
+ * waits reconnect_timeout only when all of them have failed. heartbeats
+ * are sent automatically (see ut_rpc.h), and a server that stops
+ * answering them is left for the next one.
  *
  * in the callbacks ses->privdata is the rpc_clt.
  */
@@ -26,7 +26,8 @@ typedef struct rpc_clt_cfg {
     char *name;
     /* number of entries in addrs, at least 1 */
     uint32_t addr_count;
-    /* the server addresses, all of the same sock_type. copied */
+    /* the servers, addresses or names, as nw_sock_addr_parse gives them,
+     * all of the same sock_type. copied */
     nw_addr *addrs;
     /* SOCK_STREAM, SOCK_DGRAM or SOCK_SEQPACKET */
     int sock_type;
@@ -45,7 +46,9 @@ typedef struct rpc_clt_type {
     void (*on_recv_pkg)(nw_ses *ses, rpc_pkg *pkg);
     /* optional
      *
-     * called when a connect attempt ends, see nw_clt_type.on_connect */
+     * called when an attempt to connect ends, see nw_clt_type.on_connect:
+     * with true when connected, with false when none of the servers could
+     * be reached */
     void (*on_connect)(nw_ses *ses, bool result);
     /* optional
      *
@@ -62,9 +65,6 @@ typedef struct rpc_clt_type {
 typedef struct rpc_clt {
     char *name;
     nw_clt *raw_clt;
-    uint32_t addr_count;
-    uint32_t curr_index;
-    nw_addr *addrs;
     nw_timer timer;
     double last_heartbeat;
     void (*on_recv_pkg)(nw_ses *ses, rpc_pkg *pkg);

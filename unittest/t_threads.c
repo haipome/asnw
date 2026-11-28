@@ -172,9 +172,12 @@ static void *run(void *arg)
     snprintf(cfg, sizeof(cfg), "tcp@%s", nw_sock_human_addr(&addr));
     snprintf(w->addr_text, sizeof(w->addr_text), "%s", nw_sock_human_addr(&addr));
 
+    nw_addr caddr;
     nw_clt_cfg ccfg;
     memset(&ccfg, 0, sizeof(ccfg));
-    CHECK_EQ(nw_sock_addr_parse(cfg, &ccfg.addr, &ccfg.sock_type), 0);
+    CHECK_EQ(nw_sock_addr_parse(cfg, &caddr, &ccfg.sock_type), 0);
+    ccfg.addr_count = 1;
+    ccfg.addrs = &caddr;
     ccfg.max_pkg_size = 1024;
     nw_clt_type ct;
     memset(&ct, 0, sizeof(ct));
@@ -187,9 +190,12 @@ static void *run(void *arg)
 
     /* a unix dgram client: its local path must not collide with the one
      * another thread makes at the same moment */
+    nw_addr daddr;
     nw_clt_cfg dcfg;
     memset(&dcfg, 0, sizeof(dcfg));
-    CHECK_EQ(nw_sock_addr_parse("dgram@/tmp/asnw-ut-nobody.sock", &dcfg.addr, &dcfg.sock_type), 0);
+    CHECK_EQ(nw_sock_addr_parse("dgram@/tmp/asnw-ut-nobody.sock", &daddr, &dcfg.sock_type), 0);
+    dcfg.addr_count = 1;
+    dcfg.addrs = &daddr;
     dcfg.max_pkg_size = 1024;
     nw_clt *dclt = nw_clt_create(&dcfg, &ct, w);
     CHECK(dclt != NULL);

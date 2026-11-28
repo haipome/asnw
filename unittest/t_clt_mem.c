@@ -25,9 +25,12 @@ static nw_clt *client(const char *proto, int port, bool set)
 {
     char str[64];
     snprintf(str, sizeof(str), "%s@127.0.0.1:%d", proto, port);
+    nw_addr addr;
     nw_clt_cfg cfg;
     memset(&cfg, 0, sizeof(cfg));
-    CHECK_EQ(nw_clt_cfg_parse(str, &cfg), 0);
+    CHECK_EQ(nw_sock_addr_parse(str, &addr, &cfg.sock_type), 0);
+    cfg.addr_count = 1;
+    cfg.addrs = &addr;
     cfg.max_pkg_size = 1024;
     cfg.read_mem = set ? READ_MEM : 0;
     cfg.write_mem = set ? WRITE_MEM : 0;

@@ -1,5 +1,8 @@
 /*
- * Description: example: nw_clt sending a ping every second
+ * Description: example: nw_clt sending a ping every second, to one of
+ *              the servers it is given: addresses or names of hosts
+ *              ping_clt 'tcp@127.0.0.1:1234'
+ *              ping_clt 'tcp@a.local:1234' 'tcp@b.local:1234' 
  *     History: yang@haipo.me, 2016/03/22, create
  */
 
@@ -28,14 +31,14 @@ void on_connect(nw_ses *ses, bool result)
     if (result) {
         printf("connect to: %s success\n", nw_sock_human_addr(&ses->peer_addr));
     } else {
-        printf("connect to: %s fail: %s\n", nw_sock_human_addr(&ses->peer_addr), strerror(errno));
+        /* on_error_msg has said why for each of them */
+        printf("none of the servers could be reached\n");
     }
 }
 
-int on_close(nw_ses *ses)
+void on_close(nw_ses *ses)
 {
     printf("connection to: %s close\n", nw_sock_human_addr(&ses->peer_addr));
-    return 0;
 }
 
 void on_recv_pkg(nw_ses *ses, void *data, size_t size)
@@ -63,16 +66,24 @@ void on_timeout(nw_timer *timer, void *privdata)
 
 int main(int argc, char *argv[])
 {
-    if (argc != 2) {
-        printf("usage: %s addr\n", argv[0]);
+    if (argc < 2) {
+        printf("usage: %s addr [addr ...]\n", argv[0]);
         exit(0);
     }
 
+    /* the servers have their turn in the order they are given */
     nw_clt_cfg cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.max_pkg_size = 10240;
-    if (nw_clt_cfg_parse(argv[1], &cfg) < 0) {
-        error(1, errno, "parse peer addr: %s fail", argv[1]);
+    cfg.addr_count = argc - 1;
+    cfg.addrs = calloc(cfg.addr_count, sizeof(nw_addr));
+    for (int i = 1; i < argc; ++i) {
+        int sock_type;
+        if (nw_sock_addr_parse(argv[i], &cfg.addrs[i - 1], &sock_type) < 0)
+            error(1, 0, "parse peer addr: %s fail", argv[i]);
+        if (i > 1 && sock_type != cfg.sock_type)
+            error(1, 0, "%s: not the same kind of socket as %s", argv[i], argv[1]);
+        cfg.sock_type = sock_type;
     }
 
     nw_clt_type type;
@@ -87,6 +98,8 @@ int main(int argc, char *argv[])
     if (clt == NULL) {
         error(1, errno, "nw_clt_create fail");
     }
+    /* the client has its own copy */
+    free(cfg.addrs);
     nw_clt_start(clt);
 
     nw_timer timer;

@@ -25,10 +25,9 @@ static void clt_on_connect(nw_ses *ses, bool result)
     }
 }
 
-static int clt_on_close(nw_ses *ses)
+static void clt_on_close(nw_ses *ses)
 {
     close_count++;
-    return 0;
 }
 
 static void svr_on_open(nw_ses *ses)

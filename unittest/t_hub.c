@@ -186,13 +186,12 @@ static void clt_on_connect(nw_ses *ses, bool result)
     CHECK_EQ(nw_ses_send(ses, "echo\n", 5), 0);
 }
 
-static int clt_on_close(nw_ses *ses)
+static void clt_on_close(nw_ses *ses)
 {
     struct client *c = ses->privdata;
     c->closed++;
     c->last_before_close = c->last == 1;
     nw_clt_stop(c->clt);       /* stay closed */
-    return 0;
 }
 
 static void clt_on_recv_pkg(nw_ses *ses, void *data, size_t size)

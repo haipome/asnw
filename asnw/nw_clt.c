@@ -1,5 +1,5 @@
 /*
- * Description: client, keeps a connection to one address
+ * Description: client, keeps a connection to one of its servers
  *     History: yang@haipo.me, 2016/03/22, create
  */
 
@@ -13,45 +13,56 @@
 # include "nw_clt.h"
 
 /*
+ * the servers of a client are the entries of clt->addrs, which have their
+ * turn one after the other, round and round: addr_next is the one whose
+ * turn comes next, addr_curr the one that has it. an entry that is a name
+ * is looked up when its turn comes, and its turn lasts until the addresses
+ * the lookup gave (resolved) have all been tried.
+ *
  * the states of a client, and what tells them apart:
  *
  *   stopped      no socket, no timer. after nw_clt_create and nw_clt_stop
- *   resolving    by name only: dns_query is set, the name is being looked up
+ *   resolving    dns_query is set: the name whose turn it is, is looked up
  *   connecting   a socket whose connect is on its way. timer is the connect
  *                timeout, on_connect_called says that the answer has come
  *   connected    connected is true, on_connect(true) has been called
- *   waiting      no socket. timer brings the next attempt
+ *   waiting      no socket. timer brings the next server its turn: at once
+ *                after a server that failed, after reconnect_timeout when
+ *                they have all failed
  *
  * and how one becomes the other:
  *
- *   nw_clt_start  -> resolving, or connecting if there is an address to try
- *   resolving     -> connecting, or waiting if the lookup failed
- *   connecting    -> connected
- *                 -> connecting, at once and without a word, if the name
- *                    has another address (try_next_addr)
- *                 -> waiting, if it was refused: on_connect(false), on_close
- *                 -> connecting again at once, if no answer came within
- *                    reconnect_timeout: on_close
- *   connected     -> waiting, when the peer closes or on an error: on_close
- *   waiting       -> nw_clt_start, when timer fires
+ *   nw_clt_start  -> try_next
+ *   try_next      -> resolving, or connecting
+ *   resolving     -> connecting, or server_failed
+ *   connecting    -> connected: on_connect(true)
+ *                 -> server_failed, if it was refused or gave no answer
+ *                    within reconnect_timeout
+ *   server_failed -> on_error_msg, then waiting, for no time at all. but
+ *                    if that was the last of addr_count servers to fail in
+ *                    a row (addr_failed): on_connect(false), on_close, and
+ *                    waiting for reconnect_timeout
+ *   connected     -> on_close, then waiting, for no time at all, when the
+ *                    peer closes or on an error
+ *   waiting       -> try_next, when timer fires
  *   any           -> stopped, by nw_clt_stop: on_close
  *
- * a dgram client has no connecting state, it is connected as soon as it
- * has a socket, and an error does not close it.
+ * waiting for no time at all, a timer of 0 seconds, takes the next step
+ * out of the callback that found the failure: servers that fail on the
+ * spot can never make this code call itself.
+ *
+ * a dgram client has no connecting state: it is connected as soon as it
+ * has a socket, an error does not close it, and it stays with the first
+ * of its servers.
  *
  * the application may stop or start the client from inside a callback,
  * and the code after the callback has to notice:
  *
- *   in_on_close       on_close is running. a nw_clt_stop from inside it is
- *   close_requested   only noted here, and the close in progress then
- *                     leaves the client stopped instead of waiting
- *   generation        counts every nw_clt_start and nw_clt_stop. the code
- *                     that called on_connect(false) or on_error_msg goes
- *                     on only if it has not changed
- *
- * resolve_again: the next start looks the name up again. set while
- * stopped and once connected, clear while the addresses of one lookup
- * are being tried.
+ *   generation    counts every nw_clt_start and nw_clt_stop. the code that
+ *                 called on_error_msg, on_connect(false) or on_close goes
+ *                 on only if it has not changed
+ *   in_on_close   on_close is running: a nw_clt_stop from inside it does
+ *                 not call it again
  */
 
 static int create_socket(int family, int sock_type)
@@ -90,42 +101,37 @@ static void generate_local_path(char *path, size_t size)
 }
 
 static void reconnect_later(nw_clt *clt, double delay);
+static int try_next(nw_clt *clt);
+static void server_failed(nw_clt *clt, const char *msg);
 
-static void on_reconnect_timeout(nw_timer *timer, void *privdata)
+static void on_retry(nw_timer *timer, void *privdata)
 {
     nw_clt *clt = privdata;
-    if (nw_clt_start(clt) < 0) {
-        /* could not even create a socket (out of fds ...), keep trying */
-        reconnect_later(clt, clt->reconnect_timeout);
+    if (try_next(clt) < 0) {
+        /* no socket or no lookup to be had: out of fds, of memory ... */
+        char msg[100];
+        snprintf(msg, sizeof(msg), "connect error: %m");
+        server_failed(clt, msg);
     }
 }
 
 static void reconnect_later(nw_clt *clt, double delay)
 {
     nw_timer_stop(&clt->timer);
-    nw_timer_set(&clt->timer, delay, false, on_reconnect_timeout, clt);
+    nw_timer_set(&clt->timer, delay, false, on_retry, clt);
     nw_timer_start(&clt->timer);
 }
-
-static int call_on_close(nw_clt *clt);
-static int clt_close(nw_clt *clt);
-static bool try_next_addr(nw_clt *clt);
 
 static void on_connect_timeout(nw_timer *timer, void *privdata)
 {
     nw_clt *clt = privdata;
     if (clt->on_connect_called)
         return;
-    if (try_next_addr(clt))
-        return;
-    call_on_close(clt);
-    clt_close(clt);
-    if (clt->close_requested) {
-        clt->close_requested = false;
-        return;
-    }
-    if (nw_clt_start(clt) < 0)
-        reconnect_later(clt, clt->reconnect_timeout);
+    char msg[NW_SOCK_HUMAN_ADDR_SIZE + 64];
+    snprintf(msg, sizeof(msg), "connect %s: no answer in %g seconds",
+            nw_sock_human_addr(&clt->ses.peer_addr), clt->reconnect_timeout);
+    errno = ETIMEDOUT;
+    server_failed(clt, msg);
 }
 
 static void watch_connect(nw_clt *clt)
@@ -133,6 +139,18 @@ static void watch_connect(nw_clt *clt)
     nw_timer_stop(&clt->timer);
     nw_timer_set(&clt->timer, clt->reconnect_timeout, false, on_connect_timeout, clt);
     nw_timer_start(&clt->timer);
+}
+
+/* a connect that failed on the spot is dealt with on the next turn of the
+ * loop, like one whose failure the loop reports */
+static void on_failed_at_once(nw_timer *timer, void *privdata)
+{
+    nw_clt *clt = privdata;
+    char msg[NW_SOCK_HUMAN_ADDR_SIZE + 128];
+    snprintf(msg, sizeof(msg), "connect %s: %s",
+            nw_sock_human_addr(&clt->ses.peer_addr), strerror(clt->failed_errno));
+    errno = clt->failed_errno;
+    server_failed(clt, msg);
 }
 
 static void on_recv_fd(nw_ses *ses, int fd)
@@ -159,49 +177,84 @@ static int clt_close(nw_clt *clt)
 /* tell the application that the connection is over. while it is told the
  * session refuses to send, quietly: a send that failed with an error would
  * bring us right back here for the same connection */
-static int call_on_close(nw_clt *clt)
+static void call_on_close(nw_clt *clt)
 {
-    int ret = 0;
     if (clt->type.on_close) {
         clt->in_on_close = true;
         clt->ses.closing = true;
-        ret = clt->type.on_close(&clt->ses);
+        clt->type.on_close(&clt->ses);
         clt->in_on_close = false;
     }
-    return ret;
 }
 
-/*
- * The one place a lost connection or a failed connect is handled: tell the
- * user, close, and schedule the next attempt. on_close returning > 0 asks
- * for an immediate retry; that retry still goes through the event loop
- * (a zero delay timer) so a connect that keeps failing synchronously can
- * never recurse.
- */
-static void close_and_reconnect(nw_clt *clt)
+/* the connection that was established is over: tell the application, and
+ * give the next server its turn */
+static void connection_lost(nw_clt *clt)
 {
     if (clt->in_on_close)
         return;
-    int ret = call_on_close(clt);
-    clt_close(clt);
-    if (clt->close_requested) {
-        /* on_close called nw_clt_stop: stay closed */
-        clt->close_requested = false;
+    uint32_t generation = clt->generation;
+    call_on_close(clt);
+    /* stopped or started again from the callback: the application has
+     * taken over, what follows is not ours to do any more */
+    if (generation != clt->generation)
         return;
-    }
-    reconnect_later(clt, ret > 0 ? 0 : clt->reconnect_timeout);
-}
-
-/* a server given by name has several addresses: move on to the next one
- * without telling the application, through a zero delay timer like any retry.
- * false: none is left, the attempt as a whole has failed */
-static bool try_next_addr(nw_clt *clt)
-{
-    if (clt->name == NULL || clt->resolve_again || clt->addr_next >= clt->addr_count)
-        return false;
     clt_close(clt);
     reconnect_later(clt, 0);
-    return true;
+}
+
+/*
+ * the server that had its turn could not be reached. msg says why, for the
+ * application; NULL if it has been told. what comes next:
+ *
+ *   the next address of its name, if a name it is and has more of them,
+ *   else the next server of the list,
+ *   or, when all of them have failed one after the other, the report that
+ *   the attempt has failed, and a wait before the list is gone through
+ *   again.
+ */
+static void server_failed(nw_clt *clt, const char *msg)
+{
+    if (clt->in_on_close)
+        return;
+    int why = errno;
+    uint32_t generation = clt->generation;
+    if (msg && clt->type.on_error_msg) {
+        clt->type.on_error_msg(&clt->ses, msg);
+        if (generation != clt->generation)
+            return;
+    }
+    clt_close(clt);
+
+    if (clt->ses.sock_type == SOCK_DGRAM) {
+        /* nothing to connect to: what failed is a lookup, or the socket.
+         * the same again, later */
+        clt->resolved_count = 0;
+        reconnect_later(clt, clt->reconnect_timeout);
+        return;
+    }
+    if (clt->resolved_next < clt->resolved_count) {
+        reconnect_later(clt, 0);
+        return;
+    }
+    clt->resolved_count = 0;
+    if (++clt->addr_failed < clt->addr_count) {
+        reconnect_later(clt, 0);
+        return;
+    }
+
+    clt->addr_failed = 0;
+    if (clt->type.on_connect) {
+        errno = why;
+        clt->type.on_connect(&clt->ses, false);
+        if (generation != clt->generation)
+            return;
+    }
+    call_on_close(clt);
+    if (generation != clt->generation)
+        return;
+    clt_close(clt);
+    reconnect_later(clt, clt->reconnect_timeout);
 }
 
 static int connect_to_peer(nw_clt *clt);
@@ -210,65 +263,59 @@ static void on_resolved(int error, nw_addr *addrs, uint32_t count, void *privdat
 {
     nw_clt *clt = privdata;
     clt->dns_query = NULL;
-    if (error == 0) {
-        nw_addr *copy = realloc(clt->addrs, count * sizeof(nw_addr));
-        if (copy == NULL) {
-            /* out of memory: look it up again later */
-            reconnect_later(clt, clt->reconnect_timeout);
-            return;
-        }
-        memcpy(copy, addrs, count * sizeof(nw_addr));
-        clt->addrs = copy;
-        clt->addr_count = count;
-        clt->addr_next = 0;
-        clt->resolve_again = false;
-    } else {
-        /* counts as a failed attempt: say why, close, try again later */
-        char msg[NW_DNS_MAX_NAME + 128];
-        snprintf(msg, sizeof(msg), "resolve %s: %s", clt->name, nw_dns_strerror(error));
-        uint32_t generation = clt->generation;
-        if (clt->type.on_error_msg)
-            clt->type.on_error_msg(&clt->ses, msg);
-        if (generation != clt->generation)
-            return;
-        if (clt->ses.sock_type == SOCK_DGRAM) {
-            reconnect_later(clt, clt->reconnect_timeout);
-        } else {
-            close_and_reconnect(clt);
-        }
+    const char *name = clt->addrs[clt->addr_curr].host.name;
+    char msg[NW_SOCK_MAX_NAME + 128];
+    if (error) {
+        snprintf(msg, sizeof(msg), "resolve %s: %s", name, nw_dns_strerror(error));
+        errno = EHOSTUNREACH;
+        server_failed(clt, msg);
         return;
     }
 
-    memcpy(&clt->ses.peer_addr, &clt->addrs[clt->addr_next++], sizeof(nw_addr));
-    if (connect_to_peer(clt) < 0)
-        reconnect_later(clt, clt->reconnect_timeout);
+    /* a dgram client sends to the first, it has no way to find out that
+     * another one would be better */
+    if (clt->ses.sock_type == SOCK_DGRAM)
+        count = 1;
+    nw_addr *copy = realloc(clt->resolved, count * sizeof(nw_addr));
+    if (copy == NULL) {
+        snprintf(msg, sizeof(msg), "resolve %s: out of memory", name);
+        errno = ENOMEM;
+        server_failed(clt, msg);
+        return;
+    }
+    memcpy(copy, addrs, count * sizeof(nw_addr));
+    clt->resolved = copy;
+    clt->resolved_count = count;
+    clt->resolved_next = 0;
+    if (try_next(clt) < 0) {
+        snprintf(msg, sizeof(msg), "connect error: %m");
+        server_failed(clt, msg);
+    }
 }
 
 static void on_connect(nw_ses *ses, bool result)
 {
     nw_clt *clt = (nw_clt *)ses;
     clt->on_connect_called = true;
-    if (!result && try_next_addr(clt))
+    if (!result) {
+        int why = errno;
+        char msg[NW_SOCK_HUMAN_ADDR_SIZE + 128];
+        snprintf(msg, sizeof(msg), "connect %s: %s", nw_sock_human_addr(&ses->peer_addr), strerror(why));
+        errno = why;
+        server_failed(clt, msg);
         return;
-    if (result) {
-        nw_timer_stop(&clt->timer);
-        clt->connected = true;
-        /* when this connection is lost the name may point elsewhere */
-        clt->resolve_again = true;
-        set_socket_option(clt, clt->ses.sockfd);
-        nw_sock_local_addr(ses->sockfd, ses->local_addr);
-        if (clt->type.on_connect)
-            clt->type.on_connect(ses, result);
-    } else {
-        uint32_t generation = clt->generation;
-        if (clt->type.on_connect)
-            clt->type.on_connect(ses, result);
-        /* stopped or started again from the callback: the application has
-         * taken over, this attempt is not ours to finish any more */
-        if (generation != clt->generation)
-            return;
-        close_and_reconnect(clt);
     }
+
+    nw_timer_stop(&clt->timer);
+    clt->connected = true;
+    clt->addr_failed = 0;
+    /* when this connection is lost the next server has its turn, and a
+     * name is looked up again: it may point elsewhere by then */
+    clt->resolved_count = 0;
+    set_socket_option(clt, clt->ses.sockfd);
+    nw_sock_local_addr(ses->sockfd, ses->local_addr);
+    if (clt->type.on_connect)
+        clt->type.on_connect(ses, true);
 }
 
 static void on_error(nw_ses *ses, const char *msg)
@@ -281,69 +328,35 @@ static void on_error(nw_ses *ses, const char *msg)
         return;
     if (ses->sock_type == SOCK_DGRAM)
         return;
-    close_and_reconnect(clt);
+    if (clt->connected)
+        connection_lost(clt);
+    else
+        server_failed(clt, NULL);
 }
 
 static void on_close(nw_ses *ses)
 {
     nw_clt *clt = (nw_clt *)ses;
-    close_and_reconnect(clt);
-}
-
-int nw_clt_cfg_parse(const char *str, nw_clt_cfg *cfg)
-{
-    cfg->name[0] = '\0';
-    cfg->port = 0;
-    int ret = nw_sock_addr_parse(str, &cfg->addr, &cfg->sock_type);
-    /* -4: tcp or udp, with a port, but what stands before it is no ip */
-    if (ret != -4)
-        return ret;
-
-    const char *at = strchr(str, '@');
-    const char *colon = at ? strrchr(at + 1, ':') : NULL;
-    if (colon == NULL)
-        return ret;
-    const char *name = at + 1;
-    size_t len = colon - name;
-    /* an ipv6 address that did not parse stays a bad ip */
-    if (name[0] == '[' || memchr(name, ':', len) != NULL)
-        return -4;
-    if (len == 0 || len >= NW_DNS_MAX_NAME)
-        return -6;
-    bool only_digits_and_dots = true;
-    for (size_t i = 0; i < len; ++i) {
-        char c = name[i];
-        bool letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-        bool digit = c >= '0' && c <= '9';
-        if (!letter && !digit && c != '-' && c != '_' && c != '.')
-            return -6;
-        if (!digit && c != '.')
-            only_digits_and_dots = false;
-    }
-    /* 1.2.3 or 300.1.1.1: a mistyped ip, not a name */
-    if (only_digits_and_dots)
-        return -4;
-    char *end = NULL;
-    unsigned long port = strtoul(colon + 1, &end, 10);
-    if (colon[1] < '0' || colon[1] > '9' || *end != '\0' || port > 65535)
-        return -4;
-
-    memcpy(cfg->name, name, len);
-    cfg->name[len] = '\0';
-    cfg->port = port;
-    return 0;
+    connection_lost(clt);
 }
 
 nw_clt *nw_clt_create(nw_clt_cfg *cfg, nw_clt_type *type, void *privdata)
 {
     nw_loop_init();
 
+    if (cfg->addr_count == 0 || cfg->addrs == NULL)
+        return NULL;
     if (cfg->max_pkg_size == 0)
         return NULL;
     if (type->decode_pkg == NULL)
         return NULL;
     if (type->on_recv_pkg == NULL)
         return NULL;
+    /* a name stands for ipv4 and ipv6 addresses, which are for tcp and udp */
+    for (uint32_t i = 0; i < cfg->addr_count; ++i) {
+        if (cfg->addrs[i].family == NW_SOCK_AF_NAME && cfg->sock_type != SOCK_STREAM && cfg->sock_type != SOCK_DGRAM)
+            return NULL;
+    }
 
     nw_clt *clt = malloc(sizeof(nw_clt));
     if (clt == NULL)
@@ -377,23 +390,18 @@ nw_clt *nw_clt_create(nw_clt_cfg *cfg, nw_clt_type *type, void *privdata)
     }
     memset(local_addr, 0, sizeof(nw_addr));
     clt->ses.local_addr   = local_addr;
-    if (cfg->name[0]) {
-        /* by name: the address comes from nw_dns when the client starts */
-        if (cfg->sock_type != SOCK_STREAM && cfg->sock_type != SOCK_DGRAM) {
-            nw_clt_release(clt);
-            return NULL;
-        }
-        clt->name = strdup(cfg->name);
-        if (clt->name == NULL) {
-            nw_clt_release(clt);
-            return NULL;
-        }
-        clt->port = cfg->port;
-        clt->resolve_again = true;
-    } else {
-        local_addr->family = cfg->addr.family;
-        local_addr->addrlen = cfg->addr.addrlen;
-        memcpy(&clt->ses.peer_addr, &cfg->addr, sizeof(nw_addr));
+    clt->addrs = malloc(cfg->addr_count * sizeof(nw_addr));
+    if (clt->addrs == NULL) {
+        nw_clt_release(clt);
+        return NULL;
+    }
+    memcpy(clt->addrs, cfg->addrs, cfg->addr_count * sizeof(nw_addr));
+    clt->addr_count = cfg->addr_count;
+    if (clt->addrs[0].family != NW_SOCK_AF_NAME) {
+        /* known before the client is started, for whoever reads it */
+        local_addr->family = clt->addrs[0].family;
+        local_addr->addrlen = clt->addrs[0].addrlen;
+        memcpy(&clt->ses.peer_addr, &clt->addrs[0], sizeof(nw_addr));
     }
     clt->ses.sockfd      = -1;
     clt->ses.sock_type   = cfg->sock_type;
@@ -416,25 +424,48 @@ int nw_clt_start(nw_clt *clt)
      * any pending reconnect or lookup are dropped */
     clt->generation++;
     clt_close(clt);
+    clt->addr_failed = 0;
+    clt->resolved_count = 0;
+    return try_next(clt);
+}
 
-    if (clt->name) {
-        if (clt->resolve_again || clt->addr_next >= clt->addr_count) {
-            clt->on_connect_called = false;
-            clt->dns_query = nw_dns_resolve(clt->name, clt->port, on_resolved, clt);
-            return clt->dns_query ? 0 : -1;
-        }
-        memcpy(&clt->ses.peer_addr, &clt->addrs[clt->addr_next++], sizeof(nw_addr));
+/* give the next server its turn: the next address of the name that is
+ * being gone through, else the next entry of the list, looked up first if
+ * it is a name. -1 if nothing could be started, errno says why */
+static int try_next(nw_clt *clt)
+{
+    if (clt->resolved_next < clt->resolved_count) {
+        memcpy(&clt->ses.peer_addr, &clt->resolved[clt->resolved_next++], sizeof(nw_addr));
+        return connect_to_peer(clt);
     }
+    clt->resolved_count = 0;
+
+    /* a dgram client stays with the first: nothing tells it that a server
+     * has failed */
+    clt->addr_curr = clt->ses.sock_type == SOCK_DGRAM ? 0 : clt->addr_next;
+    clt->addr_next = (clt->addr_curr + 1) % clt->addr_count;
+    nw_addr *addr = &clt->addrs[clt->addr_curr];
+    if (addr->family == NW_SOCK_AF_NAME) {
+        clt->on_connect_called = false;
+        clt->dns_query = nw_dns_resolve(addr->host.name, addr->host.port, on_resolved, clt);
+        if (clt->dns_query == NULL) {
+            errno = ENOMEM;
+            return -1;
+        }
+        return 0;
+    }
+    memcpy(&clt->ses.peer_addr, addr, sizeof(nw_addr));
     return connect_to_peer(clt);
 }
 
+/* open a socket and connect it to ses.peer_addr */
 static int connect_to_peer(nw_clt *clt)
 {
     int sockfd = create_socket(clt->ses.peer_addr.family, clt->ses.sock_type);
     if (sockfd < 0)
         return -1;
     clt->ses.sockfd = sockfd;
-    /* the family can change from one address of a name to the next */
+    /* the family can change from one server to the next */
     clt->ses.local_addr->family = clt->ses.peer_addr.family;
     clt->ses.local_addr->addrlen = clt->ses.peer_addr.addrlen;
     if (clt->ses.peer_addr.family == AF_UNIX && clt->ses.sock_type == SOCK_DGRAM) {
@@ -457,9 +488,11 @@ static int connect_to_peer(nw_clt *clt)
         clt->connected = false;
         clt->on_connect_called = false;
         if (nw_ses_connect(&clt->ses, &clt->ses.peer_addr) < 0) {
-            /* failed on the spot (unix path missing, backlog full ...):
-             * same handling as a failure reported later by the loop */
-            on_connect(&clt->ses, false);
+            /* failed on the spot (unix path missing, backlog full ...) */
+            clt->failed_errno = errno;
+            nw_timer_stop(&clt->timer);
+            nw_timer_set(&clt->timer, 0, false, on_failed_at_once, clt);
+            nw_timer_start(&clt->timer);
             return 0;
         }
         if (!clt->on_connect_called)
@@ -471,10 +504,9 @@ static int connect_to_peer(nw_clt *clt)
         nw_sock_local_addr(clt->ses.sockfd, clt->ses.local_addr);
         if (nw_ses_start(&clt->ses) < 0)
             return -1;
-        if (clt->name) {
+        if (clt->resolved_count > 0) {
             /* a dgram client is usable at once, except when its server
              * had to be looked up first: say when it is */
-            clt->resolve_again = true;
             if (clt->type.on_connect)
                 clt->type.on_connect(&clt->ses, true);
         }
@@ -484,16 +516,11 @@ static int connect_to_peer(nw_clt *clt)
 
 int nw_clt_stop(nw_clt *clt)
 {
-    if (clt->in_on_close) {
-        /* from inside on_close: the close in progress finishes the job,
-         * and does not reconnect */
-        clt->close_requested = true;
-        return 0;
-    }
     clt->generation++;
-    call_on_close(clt);
-    clt->close_requested = false;
-    clt->resolve_again = true;
+    /* from inside on_close: it is being told already */
+    if (!clt->in_on_close)
+        call_on_close(clt);
+    clt->resolved_count = 0;
     return clt_close(clt);
 }
 
@@ -506,8 +533,8 @@ void nw_clt_release(nw_clt *clt)
     if (!clt->custom_buf_pool && clt->buf_pool)
         nw_buf_pool_release(clt->buf_pool);
     free(clt->ses.local_addr);
-    free(clt->name);
     free(clt->addrs);
+    free(clt->resolved);
     free(clt);
 }
 

@@ -33,34 +33,20 @@ static void on_error_msg(nw_ses *ses, const char *msg)
 static void on_connect(nw_ses *ses, bool result)
 {
     rpc_clt *clt= ses->privdata;
-    if (result) {
-        clt->curr_index = 0;
+    if (result)
         clt->last_heartbeat = rpc_monotonic_time();
-    }
     if (clt->on_connect) {
         clt->on_connect(ses, result);
     }
 }
 
-/* curr_index counts the addresses of the list that have had their turn
- * since the last connection: the next one is tried at once, and when all
- * have failed the client waits before it starts with the first again */
-static int on_close(nw_ses *ses)
+static void on_close(nw_ses *ses)
 {
     rpc_clt *clt= ses->privdata;
     /* still connected here means that a connection is ending, not an
      * attempt that failed: that one was reported by on_connect */
     if (clt->on_close && nw_clt_connected(clt->raw_clt))
         clt->on_close(ses);
-
-    if (clt->curr_index == clt->addr_count) {
-        memcpy(&ses->peer_addr, &clt->addrs[0], sizeof(nw_addr));
-        clt->curr_index = 1;
-        return 0;
-    }
-    memcpy(&ses->peer_addr, &clt->addrs[clt->curr_index], sizeof(nw_addr));
-    clt->curr_index += 1;
-    return 1;
 }
 
 static void on_timer(nw_timer *timer, void *privdata)
@@ -73,6 +59,7 @@ static void on_timer(nw_timer *timer, void *privdata)
 
     double now = rpc_monotonic_time();
     if (now - clt->last_heartbeat > RPC_HEARTBEAT_TIMEOUT) {
+        /* this server answers no more: on to the next one */
         nw_clt_stop(clt->raw_clt);
         nw_clt_start(clt->raw_clt);
     } else {
@@ -95,7 +82,8 @@ rpc_clt *rpc_clt_create(rpc_clt_cfg *cfg, rpc_clt_type *type)
 
     nw_clt_cfg raw_cfg;
     memset(&raw_cfg, 0, sizeof(raw_cfg));
-    memcpy(&raw_cfg.addr, &cfg->addrs[0], sizeof(nw_addr));
+    raw_cfg.addr_count = cfg->addr_count;
+    raw_cfg.addrs = cfg->addrs;
     raw_cfg.sock_type = cfg->sock_type;
     raw_cfg.read_mem = cfg->read_mem;
     raw_cfg.write_mem = cfg->write_mem;
@@ -122,10 +110,6 @@ rpc_clt *rpc_clt_create(rpc_clt_cfg *cfg, rpc_clt_type *type)
 
     clt->name = strdup(cfg->name);
     assert(clt->name != NULL);
-    clt->addr_count = cfg->addr_count;
-    clt->addrs = malloc(sizeof(nw_addr) * clt->addr_count);
-    assert(clt->addrs != NULL);
-    memcpy(clt->addrs, cfg->addrs, sizeof(nw_addr) * clt->addr_count);
 
     nw_timer_set(&clt->timer, RPC_HEARTBEAT_INTERVAL, true, on_timer, clt);
     clt->on_recv_pkg = type->on_recv_pkg;
@@ -137,9 +121,6 @@ rpc_clt *rpc_clt_create(rpc_clt_cfg *cfg, rpc_clt_type *type)
 
 int rpc_clt_start(rpc_clt *clt)
 {
-    /* the first address, and it has had its turn */
-    memcpy(&clt->raw_clt->ses.peer_addr, &clt->addrs[0], sizeof(nw_addr));
-    clt->curr_index = 1;
     int ret = nw_clt_start(clt->raw_clt);
     if (ret < 0) {
         return ret;
@@ -167,7 +148,6 @@ void rpc_clt_release(rpc_clt *clt)
 {
     nw_timer_stop(&clt->timer);
     nw_clt_release(clt->raw_clt);
-    free(clt->addrs);
     free(clt->name);
     free(clt);
 }

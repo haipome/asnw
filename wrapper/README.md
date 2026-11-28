@@ -16,7 +16,7 @@ The headers are the reference: `ut_rpc.h` (packet, `rpc_send`), `ut_rpc_svr.h`, 
 |------|------------|
 | `ut_rpc.h`, `ut_rpc.c` | The packet, `rpc_decode` and `rpc_send`, the heartbeat constants |
 | `ut_rpc_svr.h`, `ut_rpc_svr.c` | The server |
-| `ut_rpc_clt.h`, `ut_rpc_clt.c` | The client, with failover |
+| `ut_rpc_clt.h`, `ut_rpc_clt.c` | The client, with heartbeats and several servers |
 | `ut_crc32.h`, `ut_crc32.c` | The checksum: standard CRC-32, 8 bytes at a time |
 | `test_rpc_svr.c`, `test_rpc_clt.c` | Examples: an echo server and a client that pings it once a second |
 
@@ -125,7 +125,7 @@ if (ses)
 static void on_connect(nw_ses *ses, bool result)
 {
     if (!result)
-        return;                             /* the next address is tried */
+        return;                             /* no server could be reached, tried again later */
     rpc_clt *clt = ses->privdata;
     rpc_pkg pkg;
     memset(&pkg, 0, sizeof(pkg));
@@ -169,7 +169,7 @@ int main(void)
 
 **Sending.** Set the `rpc_pkg` to 0, fill in `command`, `pkg_type`, `sequence` and whatever else you use, point `ext` and `body` at your data, and call `rpc_clt_send` (or `rpc_send` with a session). The data is copied, and the magic and the checksum are filled in. Sending returns -1 while there is no connection, so check `rpc_clt_connected` first, or send from `on_connect`.
 
-**Failover.** All addresses must be of the same type. The client goes through the list from the first address on, one attempt each and without delay; when none of them answers it waits `reconnect_timeout` and goes through the list again. A connection that is lost sends it back to the first address at once. `on_connect` is called for every attempt that ends, with `ses->peer_addr` telling which address it was, and the optional `on_close` when a connection that was established is over. Requests that were waiting for a reply when the connection went away are not sent again: that is for the application to decide, and `on_close` is the place to do it.
+**Several servers.** The list of the cfg is handed to the `nw_clt` underneath, which does the rest: all entries must be of the same type, each is an address or the name of a host (`tcp@rpc.internal:7000`), and they have their turn one after the other, round and round. A server that can't be reached is passed over without a wait; when none of them answers the client waits `reconnect_timeout` and goes on. A connection that is lost sends it on to the next server at once, and so does a server that stops answering heartbeats. `on_connect` is called with `true` when the client is connected, `ses->peer_addr` telling to which server, and with `false` when all of them have failed; the optional `on_close` when a connection that was established is over. Requests that were waiting for a reply when the connection went away are not sent again: that is for the application to decide, and `on_close` is the place to do it.
 
 **Matching replies to requests** is not done by `ut_rpc`; `nw_state` is made for it. Add an entry when sending and use its id as the sequence; when the reply arrives, look the entry up and delete it; if none arrives, `on_timeout` of the state table is called:
 
@@ -209,4 +209,4 @@ Datagram clients have no connection, so no heartbeat is sent and nothing tells w
 
 ## Tests
 
-`unittest/t_rpc.c` (request and reply, heartbeats), `t_rpc_decode.c` (sizes and checksum), `t_rpc_failover.c` (the first address is dead) and `t_crc32.c`, all run by `make check`.
+`unittest/t_rpc.c` (request and reply, heartbeats), `t_rpc_decode.c` (sizes and checksum), `t_rpc_failover.c` (dead servers, a server that stops answering, a server by name) and `t_crc32.c`, all run by `make check`.

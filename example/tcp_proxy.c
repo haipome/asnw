@@ -59,6 +59,7 @@ struct link {
 };
 
 static nw_svr *svr;
+static nw_addr up_addr;
 static nw_clt_cfg up_cfg;
 static nw_clt_type up_type;
 static struct link *dead;
@@ -177,7 +178,7 @@ static void on_error_msg(nw_ses *ses, const char *msg)
 static void up_on_connect(nw_ses *ses, bool result)
 {
     struct link *link = ses->privdata;
-    /* failed: on_close is called next */
+    /* the server can't be reached: on_close is called next */
     if (!result)
         return;
     nw_ses *down = nw_svr_get(svr, link->id);
@@ -215,17 +216,17 @@ static void up_on_drain(nw_ses *ses)
         nw_ses_resume_read(down);
 }
 
-static int up_on_close(nw_ses *ses)
+static void up_on_close(nw_ses *ses)
 {
     struct link *link = ses->privdata;
     if (link->up_gone)
-        return 0;
+        return;
     link->up_gone = true;
     /* one connection for one client: stay closed, don't connect again */
     nw_clt_stop(link->up);
     if (link->down_gone) {
         bury(link);
-        return 0;
+        return;
     }
     /* what is queued for the client goes out first, however long the
      * client takes: on_drain closes the connection then. nw_svr_shutdown
@@ -233,7 +234,6 @@ static int up_on_close(nw_ses *ses)
     nw_ses *down = nw_svr_get(svr, link->id);
     if (down && nw_ses_pending(down) == 0)
         nw_svr_shutdown(svr, down);
-    return 0;
 }
 
 static void up_on_error_msg(nw_ses *ses, const char *msg)
@@ -256,7 +256,9 @@ int main(int argc, char *argv[])
         exit(1);
     }
     memset(&up_cfg, 0, sizeof(up_cfg));
-    if (nw_clt_cfg_parse(argv[2], &up_cfg) < 0 || up_cfg.sock_type != SOCK_STREAM) {
+    up_cfg.addr_count = 1;
+    up_cfg.addrs = &up_addr;
+    if (nw_sock_addr_parse(argv[2], &up_addr, &up_cfg.sock_type) < 0 || up_cfg.sock_type != SOCK_STREAM) {
         printf("upstream: %s is not a stream address\n", argv[2]);
         exit(1);
     }

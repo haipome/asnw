@@ -36,10 +36,9 @@ static void on_connect(nw_ses *ses, bool result)
     }
 }
 
-static int on_close(nw_ses *ses)
+static void on_close(nw_ses *ses)
 {
     close_count++;
-    return 0;
 }
 
 static void on_error_msg(nw_ses *ses, const char *msg)

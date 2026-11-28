@@ -117,16 +117,31 @@ UT_UNUSED static nw_svr *ut_svr(const char *cfg_str, nw_svr_type *type, uint32_t
     return svr;
 }
 
-UT_UNUSED static nw_clt *ut_clt(const char *cfg_str, nw_clt_type *type, uint32_t max_pkg_size, double reconnect, void *privdata)
+/* a client with several servers, which have their turn in this order */
+UT_UNUSED static nw_clt *ut_clt_list(const char **cfg_strs, int count, nw_clt_type *type, uint32_t max_pkg_size, double reconnect, void *privdata)
 {
+    nw_addr addrs[16];
+    CHECK(count >= 1 && count <= 16);
     nw_clt_cfg cfg;
     memset(&cfg, 0, sizeof(cfg));
-    CHECK(nw_clt_cfg_parse(cfg_str, &cfg) == 0);
+    for (int i = 0; i < count; ++i) {
+        int sock_type;
+        CHECK(nw_sock_addr_parse(cfg_strs[i], &addrs[i], &sock_type) == 0);
+        CHECK(i == 0 || sock_type == cfg.sock_type);
+        cfg.sock_type = sock_type;
+    }
+    cfg.addr_count = count;
+    cfg.addrs = addrs;
     cfg.max_pkg_size = max_pkg_size;
     cfg.reconnect_timeout = reconnect;
     nw_clt *clt = nw_clt_create(&cfg, type, privdata);
     CHECK(clt != NULL);
     return clt;
+}
+
+UT_UNUSED static nw_clt *ut_clt(const char *cfg_str, nw_clt_type *type, uint32_t max_pkg_size, double reconnect, void *privdata)
+{
+    return ut_clt_list(&cfg_str, 1, type, max_pkg_size, reconnect, privdata);
 }
 
 /* port actually bound by the i-th listener (bind to port 0, then ask) */

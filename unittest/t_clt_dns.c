@@ -1,8 +1,9 @@
 /*
  * nw_clt with a server given by name: lookup before connecting, the
- * addresses of a name tried one after the other as one attempt, a new
- * lookup after a lost connection, names that fail, and closing or
- * releasing the client while a lookup is running.
+ * addresses of a name tried one after the other within its turn, a new
+ * lookup after a lost connection, names that fail, names and addresses
+ * in one list, and closing or releasing the client while a lookup is
+ * running.
  *
  * The system resolver is replaced by the getaddrinfo below, so that the
  * test decides what each name means: 127.0.0.1, .2, .3 ... are all the
@@ -114,11 +115,10 @@ static void on_connect(nw_ses *ses, bool result)
     }
 }
 
-static int on_close(nw_ses *ses)
+static void on_close(nw_ses *ses)
 {
     struct client *c = ses->privdata;
     c->closed++;
-    return 0;
 }
 
 static void on_error_msg(nw_ses *ses, const char *msg)
@@ -136,10 +136,15 @@ static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
     c->received++;
 }
 
-static void client_start(struct client *c, const char *proto, const char *host, double reconnect)
+/* a client with these servers, all on the port of the test */
+static void client_start_list(struct client *c, const char *proto, const char **hosts, int count, double reconnect)
 {
-    char cfg[128];
-    snprintf(cfg, sizeof(cfg), "%s@%s:%d", proto, host, port);
+    char cfgs[8][128];
+    const char *list[8];
+    for (int i = 0; i < count; ++i) {
+        snprintf(cfgs[i], sizeof(cfgs[i]), "%s@%s:%d", proto, hosts[i], port);
+        list[i] = cfgs[i];
+    }
     nw_clt_type type;
     memset(&type, 0, sizeof(type));
     type.decode_pkg = ut_line_decode;
@@ -148,8 +153,13 @@ static void client_start(struct client *c, const char *proto, const char *host, 
     type.on_close = on_close;
     type.on_error_msg = on_error_msg;
     memset(c, 0, sizeof(*c));
-    c->clt = ut_clt(cfg, &type, 1024, reconnect, c);
+    c->clt = ut_clt_list(list, count, &type, 1024, reconnect, c);
     CHECK_EQ(nw_clt_start(c->clt), 0);
+}
+
+static void client_start(struct client *c, const char *proto, const char *host, double reconnect)
+{
+    client_start_list(c, proto, &host, 1, reconnect);
 }
 
 # define WAIT(cond) do { \
@@ -158,18 +168,29 @@ static void client_start(struct client *c, const char *proto, const char *host, 
     CHECK(cond); \
 } while (0)
 
-static void check_parse(const char *str, int ret, const char *host, int cfg_port)
+/* host: the name it is expected to hold, "" for an address */
+static void check_parse(const char *str, int ret, const char *host, int name_port)
 {
-    nw_clt_cfg cfg;
-    memset(&cfg, 0xff, sizeof(cfg));
-    int got = nw_clt_cfg_parse(str, &cfg);
+    nw_addr addr;
+    int sock_type;
+    memset(&addr, 0xff, sizeof(addr));
+    int got = nw_sock_addr_parse(str, &addr, &sock_type);
     if (got != ret) {
-        fprintf(stderr, "nw_clt_cfg_parse(\"%s\") = %d, expected %d\n", str, got, ret);
+        fprintf(stderr, "nw_sock_addr_parse(\"%s\") = %d, expected %d\n", str, got, ret);
         exit(1);
     }
-    if (ret == 0) {
-        CHECK(strcmp(cfg.name, host) == 0);
-        CHECK_EQ(cfg.port, cfg_port);
+    if (ret != 0)
+        return;
+    if (host[0]) {
+        CHECK_EQ(addr.family, NW_SOCK_AF_NAME);
+        CHECK(strcmp(addr.host.name, host) == 0);
+        CHECK_EQ(addr.host.port, name_port);
+        char expected[NW_SOCK_HUMAN_ADDR_SIZE];
+        snprintf(expected, sizeof(expected), "%s:%d", host, name_port);
+        CHECK(strcmp(nw_sock_human_addr(&addr), expected) == 0);
+        CHECK(strcmp(nw_sock_ip(&addr), "") == 0);
+    } else {
+        CHECK(addr.family != NW_SOCK_AF_NAME);
     }
 }
 
@@ -196,17 +217,50 @@ int main(void)
     check_parse("tcp@db/local:80", -6, NULL, 0);
     check_parse("tcp@:80", -6, NULL, 0);
     check_parse("http@db.local:80", -2, NULL, 0);
-    /* names are for tcp and udp */
+    /* a name has the room of a unix path, and no more */
+    char longest[NW_SOCK_MAX_NAME], str[NW_SOCK_MAX_NAME + 32];
+    memset(longest, 'a', NW_SOCK_MAX_NAME - 1);
+    longest[NW_SOCK_MAX_NAME - 1] = '\0';
+    snprintf(str, sizeof(str), "tcp@%s:80", longest);
+    check_parse(str, 0, longest, 80);
+    snprintf(str, sizeof(str), "tcp@%sa:80", longest);
+    check_parse(str, -6, NULL, 0);
+    CHECK_EQ(sizeof(((nw_addr *)0)->host), sizeof(struct sockaddr_un));
+
+    /* names are for tcp and udp, and for clients */
+    nw_addr name_addr;
     nw_clt_cfg bad;
     memset(&bad, 0, sizeof(bad));
-    snprintf(bad.name, sizeof(bad.name), "one.test");
-    bad.sock_type = SOCK_SEQPACKET;
+    CHECK_EQ(nw_sock_addr_parse("tcp@one.test:80", &name_addr, &bad.sock_type), 0);
+    bad.addr_count = 1;
+    bad.addrs = &name_addr;
     bad.max_pkg_size = 1024;
     nw_clt_type type;
     memset(&type, 0, sizeof(type));
     type.decode_pkg = ut_line_decode;
     type.on_recv_pkg = on_recv_pkg;
+    nw_clt *named = nw_clt_create(&bad, &type, NULL);
+    CHECK(named != NULL);
+    nw_clt_release(named);
+    bad.sock_type = SOCK_SEQPACKET;
     CHECK(nw_clt_create(&bad, &type, NULL) == NULL);
+    bad.sock_type = SOCK_STREAM;
+    bad.addr_count = 0;
+    CHECK(nw_clt_create(&bad, &type, NULL) == NULL);
+    nw_svr_bind name_bind;
+    memset(&name_bind, 0, sizeof(name_bind));
+    name_bind.addr = name_addr;
+    name_bind.sock_type = SOCK_STREAM;
+    nw_svr_cfg name_cfg;
+    memset(&name_cfg, 0, sizeof(name_cfg));
+    name_cfg.bind_count = 1;
+    name_cfg.binds = &name_bind;
+    name_cfg.max_pkg_size = 1024;
+    nw_svr_type name_type;
+    memset(&name_type, 0, sizeof(name_type));
+    name_type.decode_pkg = ut_line_decode;
+    name_type.on_recv_pkg = svr_on_recv_pkg;
+    CHECK(nw_svr_create(&name_cfg, &name_type, NULL) == NULL);
 
     nw_svr_type st;
     memset(&st, 0, sizeof(st));
@@ -226,8 +280,8 @@ int main(void)
 
     /*
      * a name with two addresses, the first one dead. the client gets to
-     * the second without the application hearing of the first, and long
-     * before a reconnect_timeout has passed
+     * the second long before a reconnect_timeout has passed: the first is
+     * reported by on_error_msg, and that is all
      */
     client_start(&c, "tcp", "two.test", 5.0);
     CHECK(!nw_clt_connected(c.clt));                    /* looking the name up */
@@ -237,7 +291,9 @@ int main(void)
     CHECK_EQ(c.peer_ip, IP(1));
     CHECK_EQ(c.failed, 0);
     CHECK_EQ(c.closed, 0);
-    CHECK_EQ(c.errors, 0);
+    CHECK_EQ(c.errors, 1);
+    CHECK(strncmp(c.last_error, "connect 127.0.0.2:", 18) == 0);
+    CHECK(strstr(c.last_error, "Connection refused") != NULL);
     CHECK_EQ(GET(lookups), 1);
     CHECK_EQ(nw_ses_send(&c.clt->ses, "hello\n", 6), 0);
     WAIT(c.received == 1);
@@ -271,8 +327,8 @@ int main(void)
     CHECK_EQ(GET(lookups), 3);
     nw_clt_release(c.clt);
 
-    /* every address dead: one failed attempt per round, not one per
-     * address, and a new lookup for each round */
+    /* every address dead: on_error_msg for each of them, one failed
+     * attempt per round, and a new lookup for each round */
     lookups = 0;
     client_start(&c, "tcp", "dead.test", 0.1);
     WAIT(c.failed >= 3);
@@ -280,7 +336,7 @@ int main(void)
     CHECK(c.closed == rounds || c.closed == rounds - 1);
     CHECK(GET(lookups) >= rounds && GET(lookups) <= rounds + 1);
     CHECK_EQ(c.connected, 0);
-    CHECK_EQ(c.errors, 0);
+    CHECK(c.errors >= 3 * rounds && c.errors <= 3 * rounds + 3);
     CHECK(!nw_clt_connected(c.clt));
     nw_clt_release(c.clt);
 
@@ -291,7 +347,8 @@ int main(void)
     CHECK(strncmp(c.last_error, "resolve nowhere.test: ", 22) == 0);
     fprintf(stderr, "a name that does not resolve: %s\n", c.last_error);
     CHECK_EQ(c.connected, 0);
-    CHECK_EQ(c.failed, 0);
+    /* the only server has failed, like one that refuses */
+    CHECK(c.failed >= 3);
     CHECK(!nw_clt_connected(c.clt));
     nw_clt_release(c.clt);
 
@@ -320,7 +377,7 @@ int main(void)
      * an address that does not answer at all. a listener with a full
      * backlog ignores further connection requests, so the attempt hangs;
      * after reconnect_timeout the client moves on to the next address,
-     * as quietly as from one that refuses
+     * as it does from one that refuses
      */
     int hang = socket(AF_INET, SOCK_STREAM, 0);
     CHECK(hang >= 0);
@@ -346,7 +403,9 @@ int main(void)
         CHECK(ev_time() - begin < 2.0);
         CHECK_EQ(c.failed, 0);
         CHECK_EQ(c.closed, 0);
-        CHECK_EQ(c.errors, 0);
+        CHECK_EQ(c.errors, 1);
+        CHECK(strncmp(c.last_error, "connect 127.0.0.6:", 18) == 0);
+        CHECK(strstr(c.last_error, "no answer in 0.3 seconds") != NULL);
         CHECK_EQ(GET(lookups), 1);
     } else {
         /* this kernel let the connection through anyway: nothing to check */
@@ -356,6 +415,39 @@ int main(void)
     for (int i = 0; i < 8; ++i)
         close(fillers[i]);
     close(hang);
+
+    /*
+     * names and addresses in one list. each has its turn: an address is
+     * tried, a name is looked up and has all its addresses tried, and the
+     * first one that answers ends it
+     */
+    lookups = 0;
+    const char *mixed[] = { "127.0.0.2", "dead.test", "nowhere.test", "two.test", "127.0.0.3" };
+    client_start_list(&c, "tcp", mixed, 5, 5.0);
+    begin = ev_time();
+    WAIT(c.connected == 1);
+    CHECK(ev_time() - begin < 2.0);
+    CHECK_EQ(c.peer_ip, IP(1));                 /* the second address of two.test */
+    CHECK_EQ(c.errors, 1 + 3 + 1 + 1);
+    CHECK_EQ(c.failed, 0);
+    CHECK_EQ(c.closed, 0);
+    CHECK_EQ(GET(lookups), 3);
+    /* lost: on with the next entry, the address behind it */
+    drop_clients(svr1);
+    WAIT(c.connected == 2);
+    CHECK_EQ(c.peer_ip, IP(3));
+    CHECK_EQ(c.closed, 1);
+    CHECK_EQ(c.errors, 6);
+    CHECK_EQ(GET(lookups), 3);
+    /* lost again: round to the beginning, and each name is looked up anew */
+    drop_clients(svr3);
+    WAIT(c.connected == 3);
+    CHECK_EQ(c.peer_ip, IP(1));
+    CHECK_EQ(c.closed, 2);
+    CHECK_EQ(c.errors, 12);
+    CHECK_EQ(c.failed, 0);
+    CHECK_EQ(GET(lookups), 6);
+    nw_clt_release(c.clt);
 
     /* closed while the lookup is running: its answer changes nothing */
     client_start(&c, "tcp", "slow.test", 0.1);

@@ -10,6 +10,7 @@
 # include <errno.h>
 # include <fcntl.h>
 # include <unistd.h>
+# include <stdbool.h>
 
 # include "nw_sock.h"
 
@@ -34,6 +35,9 @@ char *nw_sock_human_addr_s(nw_addr *addr, char *dest)
         break;
     case AF_UNIX:
         snprintf(dest, NW_SOCK_HUMAN_ADDR_SIZE, "%s:%s", "unix", (addr->un.sun_path));
+        break;
+    case NW_SOCK_AF_NAME:
+        snprintf(dest, NW_SOCK_HUMAN_ADDR_SIZE, "%s:%u", addr->host.name, addr->host.port);
         break;
     default:
         dest[0] = 0;
@@ -122,6 +126,44 @@ static int addr_fill_inet(nw_addr *addr, const char *host, const char *port)
     return 0;
 }
 
+/* not an ip: the name of a host, if it can be one. 0, -4 for what is
+ * rather an ip or a port gone wrong, -6 for what is neither */
+static int addr_fill_name(nw_addr *addr, const char *host, const char *port)
+{
+    if (*port < '0' || *port > '9')
+        return -4;
+    char *end = NULL;
+    unsigned long port_num = strtoul(port, &end, 10);
+    if (*end != '\0' || port_num > 65535)
+        return -4;
+    /* an ipv6 address that did not parse stays a bad ip */
+    if (strchr(host, ':') != NULL)
+        return -4;
+
+    size_t len = strlen(host);
+    if (len == 0 || len >= NW_SOCK_MAX_NAME)
+        return -6;
+    bool only_digits_and_dots = true;
+    for (size_t i = 0; i < len; ++i) {
+        char c = host[i];
+        bool letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        bool digit = c >= '0' && c <= '9';
+        if (!letter && !digit && c != '-' && c != '_' && c != '.')
+            return -6;
+        if (!digit && c != '.')
+            only_digits_and_dots = false;
+    }
+    /* 1.2.3 or 300.1.1.1: a mistyped ip, not a name */
+    if (only_digits_and_dots)
+        return -4;
+
+    memset(addr, 0, sizeof(nw_addr));
+    addr->family = NW_SOCK_AF_NAME;
+    addr->host.port = port_num;
+    memcpy(addr->host.name, host, len);
+    return 0;
+}
+
 static int addr_fill_unix(nw_addr *addr, const char *unix_path)
 {
     size_t pathlen = strlen(unix_path);
@@ -172,7 +214,8 @@ int nw_sock_addr_parse(const char *str, nw_addr *addr, int *sock_type)
         /* ipv4:port, [ipv6]:port or ipv6:port. the port follows the LAST
          * colon, an ipv6 address is full of them */
         char *host = name;
-        if (name[0] == '[') {
+        bool bracketed = (name[0] == '[');
+        if (bracketed) {
             host = name + 1;
             sep = strchr(host, ']');
             if (sep == NULL || sep[1] != ':') {
@@ -190,8 +233,12 @@ int nw_sock_addr_parse(const char *str, nw_addr *addr, int *sock_type)
         *sep = '\0';
         char *port = sep + 1;
         if (addr_fill_inet(addr, host, port) < 0) {
-            free(s);
-            return -4;
+            /* [..] can only be an ipv6 address */
+            int ret = bracketed ? -4 : addr_fill_name(addr, host, port);
+            if (ret < 0) {
+                free(s);
+                return ret;
+            }
         }
     } else {
         if (addr_fill_unix(addr, name) < 0) {

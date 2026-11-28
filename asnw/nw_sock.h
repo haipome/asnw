@@ -6,6 +6,7 @@
 # ifndef _NW_SOCK_H_
 # define _NW_SOCK_H_
 
+# include <stdint.h>
 # include <sys/types.h>
 # include <sys/resource.h>
 # include <sys/stat.h>
@@ -15,16 +16,36 @@
 # include <netinet/in.h>
 # include <netinet/tcp.h>
 
-/* nw_addr is one address of any supported kind: ipv4, ipv6 or unix path */
+/* the family of a nw_addr that holds a host name. no AF_ value is that big */
+# define NW_SOCK_AF_NAME 0x10000
+/* room for a host name in a nw_addr, '\0' included. it shares the place of
+ * the unix path: a nw_addr is no bigger for it */
+# define NW_SOCK_MAX_NAME (sizeof(struct sockaddr_un) - sizeof(uint16_t))
+
+/*
+ * nw_addr is one address of any supported kind: ipv4, ipv6 or unix path.
+ *
+ * or the name of a host, with a port, in place of an ipv4 or ipv6 address.
+ * a name is not an address yet: it is for a nw_clt, which looks it up
+ * each time it connects. nothing else takes one, a server can't listen on
+ * a name.
+ */
 typedef struct nw_addr {
-    /* AF_INET, AF_INET6 or AF_UNIX: tells which member of the union is used */
+    /* AF_INET, AF_INET6, AF_UNIX or NW_SOCK_AF_NAME: tells which member of
+     * the union is used */
     unsigned int family;
-    /* length of the address, as passed to bind / connect / sendto */
+    /* length of the address, as passed to bind / connect / sendto. 0 for
+     * a name */
     unsigned int addrlen;
     union {
         struct sockaddr_in  in;
         struct sockaddr_in6 in6;
         struct sockaddr_un  un;
+        struct {
+            /* in host byte order */
+            uint16_t port;
+            char     name[NW_SOCK_MAX_NAME];
+        } host;
     };
 } nw_addr;
 
@@ -40,6 +61,7 @@ typedef struct nw_addr {
  *   ipv4: 127.0.0.1:3333
  *   ipv6: [::1]:3333
  *   unix: unix:/tmp/test.sock
+ *   name: db.local:3333
  * returns a static buffer (one per thread) that the next call overwrites,
  * so don't use it twice in one printf and don't keep the pointer
  */
@@ -50,7 +72,7 @@ char *nw_sock_human_addr(nw_addr *addr);
 char *nw_sock_human_addr_s(nw_addr *addr, char *dest);
 
 /* the ip of an ipv4 / ipv6 address without the port, an empty string for a
- * unix address. returns a static buffer, like nw_sock_human_addr */
+ * unix address or a name. returns a static buffer, like nw_sock_human_addr */
 char *nw_sock_ip(nw_addr *addr);
 
 /* same, written to ip, which must hold at least NW_SOCK_IP_SIZE bytes.
@@ -65,19 +87,24 @@ int nw_sock_set_mode(nw_addr *addr, mode_t mode);
  * parse an address written as protocol@address into addr and sock_type.
  *
  *   protocol    address             sock_type
- *   tcp         ip:port             SOCK_STREAM
- *   udp         ip:port             SOCK_DGRAM
+ *   tcp         ip:port, name:port  SOCK_STREAM
+ *   udp         ip:port, name:port  SOCK_DGRAM
  *   stream      unix socket path    SOCK_STREAM
  *   dgram       unix socket path    SOCK_DGRAM
  *   seqpacket   unix socket path    SOCK_SEQPACKET
  *
- * the protocol is case insensitive. the ip is numeric, names are not
- * resolved (a client can be given one, see nw_clt_cfg_parse). ipv6 is
- * written [ip]:port (a bare ip:port is accepted too, the port is what
- * follows the last colon). the port is decimal, 0 to 65535.
+ * the protocol is case insensitive. ipv6 is written [ip]:port (a bare
+ * ip:port is accepted too, the port is what follows the last colon). the
+ * port is decimal, 0 to 65535.
+ *
+ * what stands in the place of the ip and is none is taken for the name of
+ * a host: letters, digits, '-', '_' and '.', less than NW_SOCK_MAX_NAME
+ * of them. nothing is looked up here, addr just holds the name and the
+ * port (family NW_SOCK_AF_NAME), for a nw_clt.
  *
  * example: tcp@127.0.0.1:3333
  *          tcp@[::1]:3333
+ *          tcp@db.local:3333
  *          dgram@/tmp/test.sock
  *
  * return 0 on success, or
@@ -86,6 +113,7 @@ int nw_sock_set_mode(nw_addr *addr, mode_t mode);
  *   -3: no port
  *   -4: bad ip or port
  *   -5: unix path empty or too long
+ *   -6: neither an ip nor a possible name
  */
 int nw_sock_addr_parse(const char *str, nw_addr *addr, int *sock_type);
 

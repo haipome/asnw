@@ -337,6 +337,11 @@ nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata)
         return NULL;
     if (type->on_privdata_alloc && !type->on_privdata_free)
         return NULL;
+    /* a name is for a client to look up, not something to listen on */
+    for (uint32_t i = 0; i < cfg->bind_count; ++i) {
+        if (cfg->binds[i].addr.family == NW_SOCK_AF_NAME)
+            return NULL;
+    }
 
     nw_svr *svr = malloc(sizeof(nw_svr));
     if (svr == NULL)

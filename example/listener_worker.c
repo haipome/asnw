@@ -120,10 +120,9 @@ void inner_clt_on_connect(nw_ses *ses, bool result)
     }
 }
 
-int inner_clt_on_close(nw_ses *ses)
+void inner_clt_on_close(nw_ses *ses)
 {
     printf("worker: %d connection with listener close\n", worker_id);
-    return 0;
 }
 
 void inner_clt_on_recv_pkg(nw_ses *ses, void *data, size_t size)
@@ -202,11 +201,14 @@ int init_inner_svr(void)
 
 int init_inner_clt(void)
 {
+    nw_addr addr;
     nw_clt_cfg cfg;
     memset(&cfg, 0, sizeof(cfg));
-    if (nw_sock_addr_parse(inner_sock_cfg, &cfg.addr, &cfg.sock_type) < 0) {
+    if (nw_sock_addr_parse(inner_sock_cfg, &addr, &cfg.sock_type) < 0) {
         return -1;
     }
+    cfg.addr_count = 1;
+    cfg.addrs = &addr;
     cfg.max_pkg_size = max_pkg_size;
 
     nw_clt_type type;

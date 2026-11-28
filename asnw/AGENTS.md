@@ -19,7 +19,7 @@ it; do not guess a signature.
 | Module | What it is | Reach for it when |
 |---|---|---|
 | `nw_svr` | Server: tcp, udp, unix stream / dgram / seqpacket, same callbacks for all | You write a server with a protocol of your own |
-| `nw_clt` | Client: one connection to one server (address or name), reconnects by itself | A service keeps a long connection to another one |
+| `nw_clt` | Client: one connection to one of its servers (addresses or names), goes on to the next when one fails, reconnects by itself | A service keeps a long connection to another one |
 | `nw_hub` | A `nw_svr` on N worker threads, one thread accepts | One thread is not enough |
 | `nw_http` | HTTP/1.0 and 1.1 server. `thread_count` runs it on a hub | You expose an HTTP interface |
 | `nw_ws` | WebSocket server (RFC 6455). `thread_count` runs it on a hub | You push to browsers or apps |
@@ -83,8 +83,9 @@ int main(void)
 }
 ```
 
-A client is the same with `nw_clt_cfg` (`nw_clt_cfg_parse` takes an
-address or a name), `nw_clt_type`, `nw_clt_create`, `nw_clt_start`. An
+A client is the same with `nw_clt_cfg` (`addrs` and `addr_count`: one
+server or several, each an address or a name, as `nw_sock_addr_parse`
+gives them), `nw_clt_type`, `nw_clt_create`, `nw_clt_start`. An
 HTTP server sets `on_request` in `nw_http_svr_type` and answers with
 `nw_http_reply_body` or `nw_http_reply`. Complete examples are in the
 `example/` directory of the repository: `echo_server.c`, `ping_clt.c`,
@@ -129,8 +130,9 @@ HTTP server sets `on_request` in `nw_http_svr_type` and answers with
 
 9. **A client may not be connected.** Check `nw_clt_connected(clt)` before
    sending. `on_close` is called once per lost connection or failed
-   attempt; the client then reconnects every `reconnect_timeout` seconds
-   by itself.
+   attempt; the client goes on by itself: to the next server of its list
+   at once, and after `reconnect_timeout` seconds when all of them have
+   failed.
 
 10. **Release order.** Release what adds work before what does it: a hub
     or server before the `nw_job` its callbacks add to. `nw_loop_release`
@@ -183,6 +185,13 @@ them again without a new reason:
 - **`nw_clt` has no reconnect backoff, no idle timeout and no heartbeat.**
   Connections between services are few; heartbeats belong to the protocol
   above (see `wrapper/ut_rpc_clt.c` in the repository).
+- **`nw_clt` has no preference among its servers.** They have their turn
+  in the order of the list, and a lost connection sends the client on to
+  the next one, not back to the first: which server comes first is said
+  by the order the program gives, there is no primary to return to.
+- **A `nw_addr` can hold a host name** (`NW_SOCK_AF_NAME`), of at most
+  `NW_SOCK_MAX_NAME` - 1 characters: the room of a unix path, so that
+  sessions are no bigger for it. Only `nw_clt` takes one.
 - **No TLS, no HTTP/2, no general HTTP client.** `nw_req` is GET and POST
   over plain HTTP inside a trusted network, on purpose: no https, no
   request headers, no retries. Put a proxy in front for TLS, use libcurl

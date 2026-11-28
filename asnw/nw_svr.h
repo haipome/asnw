@@ -273,7 +273,8 @@ typedef struct nw_svr {
 /* create a server. cfg and type are copied. the sockets are created here
  * but nothing is bound yet. privdata is stored in nw_svr privdata.
  * return NULL if cfg or type is incomplete (no bind, max_pkg_size 0, a
- * `must` callback missing), a socket can't be created or memory runs out */
+ * `must` callback missing), a bind is the name of a host (a server can't
+ * listen on one), a socket can't be created or memory runs out */
 nw_svr *nw_svr_create(nw_svr_cfg *cfg, nw_svr_type *type, void *privdata);
 
 /* bind every address and start accepting / receiving. return 0, or -1 with

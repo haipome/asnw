@@ -1,13 +1,13 @@
 /*
  * nw_clt on_close: sending from it fails quietly instead of recursing
  * (regression: it used to call on_close again without end), nw_clt_stop
- * from it means "stay closed", and a connect attempt that gets no answer
- * is given up after the timeout and retried.
+ * from it means "stay closed", and a connect that gets no answer is given
+ * up after the timeout, a failed attempt like one that was refused.
  */
 # include "common.h"
 
 static nw_clt *clt;
-static int close_count, connect_ok, connect_fail;
+static int close_count, connect_ok, connect_fail, error_count, fail_errno;
 static bool stay_closed;
 
 static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
@@ -16,19 +16,25 @@ static void on_recv_pkg(nw_ses *ses, void *data, size_t size)
 
 static void on_connect(nw_ses *ses, bool result)
 {
-    if (result)
+    if (result) {
         connect_ok++;
-    else
+    } else {
         connect_fail++;
+        fail_errno = errno;
+    }
 }
 
-static int on_close(nw_ses *ses)
+static void on_error_msg(nw_ses *ses, const char *msg)
+{
+    error_count++;
+}
+
+static void on_close(nw_ses *ses)
 {
     close_count++;
     CHECK_EQ(nw_ses_send(ses, "last words\n", 11), -1);     /* the connection is over */
     if (stay_closed)
         CHECK_EQ(nw_clt_stop(clt), 0);
-    return 0;
 }
 
 static int listener(int backlog, char *cfg, size_t cfg_size)
@@ -69,17 +75,17 @@ int main(void)
     ct.on_recv_pkg = on_recv_pkg;
     ct.on_connect = on_connect;
     ct.on_close = on_close;
+    ct.on_error_msg = on_error_msg;
     clt = ut_clt(cfg, &ct, 1024, 0.1, NULL);
     CHECK_EQ(nw_clt_start(clt), 0);
     ut_run_for(0.05);
     CHECK_EQ(connect_ok, 1);
 
-    /* the server resets the connection: on_close once, then a reconnect */
+    /* the server resets the connection: on_close once, and the client is
+     * back at once, without a wait */
     reset_peer(lfd);
     ut_run_for(0.05);
     CHECK_EQ(close_count, 1);
-    CHECK(!nw_clt_connected(clt));
-    ut_run_for(0.3);
     CHECK_EQ(connect_ok, 2);
     CHECK(nw_clt_connected(clt));
     CHECK_EQ(nw_ses_send(&clt->ses, "works again\n", 12), 0);
@@ -108,10 +114,11 @@ int main(void)
     close(lfd);
 
     /*
-     * a connect attempt that gets no answer. a listener with a full
-     * backlog ignores further connection requests, so the client's attempt
-     * just hangs; after reconnect_timeout it is given up (on_close) and
-     * started again
+     * a connect that gets no answer. a listener with a full backlog
+     * ignores further connection requests, so the client's attempt just
+     * hangs; after reconnect_timeout it is given up. the only server has
+     * failed then: on_error_msg, on_connect(false), on_close, and the next
+     * attempt reconnect_timeout later
      */
     lfd = listener(0, cfg, sizeof(cfg));
     int fillers[8];
@@ -126,14 +133,17 @@ int main(void)
     }
     usleep(50 * 1000);
 
-    close_count = connect_ok = connect_fail = 0;
+    close_count = connect_ok = connect_fail = error_count = 0;
     clt = ut_clt(cfg, &ct, 1024, 0.2, NULL);
     CHECK_EQ(nw_clt_start(clt), 0);
     ut_run_for(0.9);
     fprintf(stderr, "hanging connect, 0.2s timeout, 0.9s: given up %d times, connected %d times\n", close_count, connect_ok);
     if (connect_ok == 0) {
-        CHECK(close_count >= 3 && close_count <= 5);
-        CHECK_EQ(connect_fail, 0);                      /* a timeout is reported by on_close only */
+        /* given up at 0.2 and 0.6 */
+        CHECK(close_count >= 2 && close_count <= 3);
+        CHECK_EQ(connect_fail, close_count);
+        CHECK_EQ(error_count, close_count);
+        CHECK_EQ(fail_errno, ETIMEDOUT);
         CHECK(!nw_clt_connected(clt));
     } else {
         /* this kernel let the connection through anyway: nothing to check */

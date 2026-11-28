@@ -21,8 +21,8 @@
  * (NW_DNS_THREADS per loop thread, started when first needed) and the
  * result comes back as a callback on the loop thread.
  *
- * nw_clt uses this for a server given by name, see nw_clt_cfg_parse: you
- * only need nw_dns directly for names of your own.
+ * nw_clt uses this for a server given by name, see nw_clt.h: you only
+ * need nw_dns directly for names of your own.
  *
  * a lookup that hangs can't be interrupted: it keeps one of the threads
  * busy until the system gives up, and releasing the loop of a thread
